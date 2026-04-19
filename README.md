@@ -12,7 +12,8 @@ compares timing results.
 - `reference/`: pinned binary fixture for correctness checks
 - `docs/`: optimization scope and wave-start prompt files
 - `.codex/`: wave-loop hooks and local Codex control files
-- root files: repo-wide instructions, high-level docs, and wave counter
+- root files: repo-wide instructions, high-level docs, best-result log, and
+  wave counter
 
 ## Key Files
 
@@ -22,6 +23,7 @@ compares timing results.
 - `tools/run_verify_timed.py`: benchmark runner with repeated execution and summary
 - `docs/task.md`: optimization scope, validation policy, and benchmark rules
 - `docs/init_prompt.md`: prompt used to initialize each optimization wave
+- `log.md`: running record of the best known benchmark result across waves
 - `AGENTS.md`: repository-level instructions for Codex
 
 ## Usage

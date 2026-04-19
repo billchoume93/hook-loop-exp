@@ -8,6 +8,8 @@ All algorithm optimization work must happen in
 
 - Only modify `algorithms/pi_algo_improve-by-agent.py` during normal
   optimization waves.
+- `log.md` may also be updated during normal optimization waves to preserve the
+  best known benchmark result.
 
 ## Optimization Goal
 
@@ -28,6 +30,19 @@ All algorithm optimization work must happen in
 - `docs/task.md`
 - `docs/init_prompt.md`
 - `README.md`
+
+## Logging Rules
+
+- Read `log.md` before starting a new optimization wave.
+- Treat the best result in `log.md` as the performance target to beat.
+- After a successful wave, update `log.md` with:
+  - wave identifier
+  - benchmark command
+  - measured execution time for `improve`
+  - measured execution time for `org`
+  - ratio vs `org`
+  - whether the current wave set a new best result
+  - a short note about the change
 
 ## Correctness Rules
 

@@ -2,10 +2,13 @@
 
 Before starting each optimization wave, read `docs/task.md` and follow it
 strictly.
+Also read `log.md` to understand the current best known performance.
 
 Wave goal:
 
 - Optimize only `algorithms/pi_algo_improve-by-agent.py`.
+- Update `log.md` after a successful wave to preserve the latest benchmark
+  result and whether it improved on the best known result.
 - Optimize for faster computation of the 65536-digit pi value.
 - Keep the implementation in single-core execution mode.
 - Do not modify any other repository file unless the user explicitly asks for it.
@@ -35,5 +38,6 @@ Benchmark policy:
 Output policy for each wave:
 
 - Make one scoped improvement only.
+- Record the successful benchmark result in `log.md`.
 - End with a short summary of what changed, what was verified, and the next
   optimization direction.

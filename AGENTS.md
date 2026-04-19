@@ -6,6 +6,8 @@ These instructions apply to the entire repository.
 
 - During normal optimization waves, only modify
   `algorithms/pi_algo_improve-by-agent.py`.
+- `log.md` may also be updated to record the best known benchmark result for the
+  latest successful wave.
 - Do not modify other files unless the user explicitly requests it.
 - Optimize for faster computation of the 65536-digit pi value.
 - Keep the implementation in single-core execution mode.
@@ -37,3 +39,6 @@ These instructions apply to the entire repository.
 
 - Read `docs/task.md` and `docs/init_prompt.md` before starting a new
   optimization wave.
+- Read `log.md` before starting a new optimization wave.
+- After a successful wave, update `log.md` with the latest measured result and
+  whether it improved on the current best result.

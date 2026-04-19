@@ -8,7 +8,10 @@ from pathlib import Path
 
 import fcntl
 
-ALLOWED_EDIT_TARGET = "algorithms/pi_algo_improve-by-agent.py"
+ALLOWED_EDIT_TARGETS = {
+    "algorithms/pi_algo_improve-by-agent.py",
+    "log.md",
+}
 COUNT_FILE = "count.md"
 LOCK_FILE = ".codex/wave.lock"
 COUNT_RE = re.compile(r"wave_count\s*=\s*(\d+)")
@@ -77,16 +80,21 @@ def run_shell_command(project_root: Path, command: str) -> subprocess.CompletedP
 
 def require_only_allowed_target(project_root: Path) -> tuple[bool, str]:
     changed_paths = git_changed_paths(project_root)
-    disallowed = [path for path in changed_paths if path != ALLOWED_EDIT_TARGET]
+    disallowed = [path for path in changed_paths if path not in ALLOWED_EDIT_TARGETS]
     if disallowed:
         return (
             False,
             "disallowed modified files: "
             + ", ".join(disallowed)
-            + f"; only {ALLOWED_EDIT_TARGET} may change during a wave",
+            + "; only "
+            + ", ".join(sorted(ALLOWED_EDIT_TARGETS))
+            + " may change during a wave",
         )
-    if ALLOWED_EDIT_TARGET not in changed_paths:
-        return (False, f"expected a change in {ALLOWED_EDIT_TARGET} before consuming a wave")
+    if "algorithms/pi_algo_improve-by-agent.py" not in changed_paths:
+        return (
+            False,
+            "expected a change in algorithms/pi_algo_improve-by-agent.py before consuming a wave",
+        )
     return (True, "")
 
 
