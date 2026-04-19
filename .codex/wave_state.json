@@ -1,4 +1,17 @@
 {
-  "configured_count": 0,
-  "remaining": 0
+  "version": 1,
+  "request_id": null,
+  "request_sha256": null,
+  "status": "idle",
+  "requested_waves": 0,
+  "completed_waves": 0,
+  "remaining_waves": 0,
+  "current_wave": 0,
+  "base_head": null,
+  "base_branch": null,
+  "worktree_path": "/Users/keira/work/hook_loop_exp",
+  "last_result": null,
+  "last_stop_reason": null,
+  "created_at": null,
+  "updated_at": null
 }

@@ -8,17 +8,25 @@ REFERENCE_PATH = Path(__file__).resolve().parent.parent / "reference" / "pi_6553
 MAX_VERIFIED_DIGITS = 65536
 
 
-def verify_against_binary(pi_text: str, reference_path: Path) -> None:
+def verify_against_binary(pi_text: str, reference_path: Path, *, exact: bool = False) -> None:
     if not reference_path.exists():
         raise FileNotFoundError(f"reference binary not found: {reference_path}")
 
     expected = reference_path.read_bytes()
     actual = pi_text.encode("ascii")
 
+    if exact and len(actual) != len(expected):
+        raise AssertionError(
+            f"exact verification requires {len(expected) - 2} digits, got {len(actual) - 2}"
+        )
+
     if len(actual) > len(expected):
         raise ValueError(
             f"reference only covers {MAX_VERIFIED_DIGITS} digits, got {len(actual) - 2}"
         )
+
+    if exact and actual == expected:
+        return
 
     if actual == expected[: len(actual)]:
         return
@@ -48,6 +56,11 @@ def parse_args() -> argparse.Namespace:
         default=REFERENCE_PATH,
         help="Pinned binary file used for direct byte verification.",
     )
+    parser.add_argument(
+        "--exact",
+        action="store_true",
+        help="Require an exact byte-for-byte match against the full reference file.",
+    )
     return parser.parse_args()
 
 
@@ -60,7 +73,7 @@ def read_input(input_path: Path | None) -> str:
 def main() -> None:
     args = parse_args()
     pi_text = read_input(args.input)
-    verify_against_binary(pi_text, args.reference)
+    verify_against_binary(pi_text, args.reference, exact=args.exact)
     print("OK")
 
 
