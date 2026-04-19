@@ -29,6 +29,7 @@ IGNORED_PATH_PREFIXES = (
 IGNORED_PATHS = {
     ".codex/wave.lock",
     STATE_FILE,
+    COUNT_FILE,
 }
 
 
@@ -108,9 +109,8 @@ def load_runtime_state(state_path: Path, configured_count: int) -> int:
             and isinstance(state_remaining, int)
             and 0 <= state_remaining <= state_configured
         ):
-            if state_configured == configured_count:
-                return state_remaining
-        # Reinitialize runtime state when the config changes or the state is invalid.
+            return state_remaining
+        # Reinitialize runtime state only when the saved state is invalid.
 
     persist_runtime_state(state_path, configured_count, configured_count)
     return configured_count
