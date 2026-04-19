@@ -1,25 +1,33 @@
-# Task Lock
+# 任務鎖定
 
-This repository is set up to optimize the speed of computing pi to 65536 digits.
-All algorithm optimization work must happen in
-`algorithms/pi_algo_improve-by-agent.py`.
+這個 repository 的用途是持續優化計算 65536 位數 pi 的速度。
+所有演算法優化工作都必須發生在
+`algorithms/pi_algo_improve-by-agent.py`。
 
-## Allowed Edit Target
+## 允許修改的目標
 
-- Only modify `algorithms/pi_algo_improve-by-agent.py` during normal
-  optimization waves.
-- `log.md` may also be updated during normal optimization waves to preserve the
-  best known benchmark result.
+- 在一般 optimization wave 中，只能修改 `algorithms/pi_algo_improve-by-agent.py`。
+- 在一般 optimization wave 中，也可以更新 `log.md`，用來保存目前最佳 benchmark 結果。
 
-## Optimization Goal
+## 優化目標
 
-- Optimize the algorithm speed for producing the 65536-digit pi output value.
-- Keep the implementation in single-core execution mode.
-- Any speedup must preserve the single-core constraint.
-- Keep the original comparison baseline in `algorithms/pi_algo_org.py`.
-- Put all optimization changes in `algorithms/pi_algo_improve-by-agent.py`.
+- 優化產生 65536 位數 pi 輸出的速度。
+- 必須保持單核心執行模式。
+- 任何速度提升都必須保留單核心限制。
+- 保留 `algorithms/pi_algo_org.py` 作為原始比較基準。
+- 所有優化變更都必須放在 `algorithms/pi_algo_improve-by-agent.py`。
 
-## Files That Must Not Be Modified During Normal Optimization Waves
+## 連續演化規則
+
+- 每一輪 optimization wave 開始前，都必須先閱讀 `log.md`。
+- `log.md` 中的目前最佳結果是下一輪必須挑戰的 performance target。
+- 每一輪都應以「超越 `log.md` 目前最佳數據」為首要目標，而不只是做出一個可執行版本。
+- 若本輪結果沒有超越目前最佳值，仍可視為一次有效嘗試，但必須清楚記錄這一輪沒有刷新紀錄，並說明未改善或退步的原因。
+- 若本輪成功超越目前最佳值，必須同步更新 `log.md` 的 Current Best 與 Wave History。
+- 每一輪只允許一個範圍明確、可歸因的改動，讓性能變化可以被追蹤。
+- 下一輪必須以上一輪寫入 `log.md` 的最佳值作為新的目標，持續迭代。
+
+## 一般 optimization wave 中禁止修改的檔案
 
 - `algorithms/pi_algo_org.py`
 - `tools/run_verify_timed.py`
@@ -31,41 +39,38 @@ All algorithm optimization work must happen in
 - `docs/init_prompt.md`
 - `README.md`
 
-## Logging Rules
+## 記錄規則
 
-- Read `log.md` before starting a new optimization wave.
-- Treat the best result in `log.md` as the performance target to beat.
-- After a successful wave, update `log.md` with:
-  - wave identifier
-  - benchmark command
-  - measured execution time for `improve`
-  - measured execution time for `org`
-  - ratio vs `org`
-  - whether the current wave set a new best result
-  - a short note about the change
+- 開始新的一輪 optimization wave 前，必須先閱讀 `log.md`。
+- 必須把 `log.md` 中的最佳結果視為需要超越的目標。
+- 成功完成一輪後，更新 `log.md`，至少包含：
+  - wave 識別碼
+  - benchmark 指令
+  - `improve` 的 execution time
+  - `org` 的 execution time
+  - 相對於 `org` 的 ratio
+  - 本輪是否創下新的最佳結果
+  - 本輪修改的簡短說明
 
-## Correctness Rules
+## 正確性規則
 
-- Do not use cross-validation between two algorithms.
-- Correctness must be checked against the pinned binary file
-  `reference/pi_65536.bin`.
-- Python verification must stay independent from the implementation being tested.
-- Validation must pass before an optimization result is accepted.
-- Use `tools/verify_pi_bin.py` or `tools/run_verify_timed.py` for validation.
-- The required full verification command is:
+- 不得使用兩個演算法互相比對作為驗證方式。
+- 正確性必須透過固定的二進位參考檔 `reference/pi_65536.bin` 驗證。
+- Python 驗證器必須獨立於被測實作。
+- 在驗證通過之前，任何優化結果都不能被視為有效。
+- 驗證時使用 `tools/verify_pi_bin.py` 或 `tools/run_verify_timed.py`。
+- 必要的完整驗證指令為：
   `python3 algorithms/pi_algo_improve-by-agent.py 65536 | python3 tools/verify_pi_bin.py`
 
-## Benchmark Rules
+## Benchmark 規則
 
-- Compare `algorithms/pi_algo_improve-by-agent.py` against
-  `algorithms/pi_algo_org.py`.
-- Both implementations must pass independent binary verification before timing
-  comparison is considered valid.
-- The required fixed benchmark command is:
+- 必須比較 `algorithms/pi_algo_improve-by-agent.py` 與
+  `algorithms/pi_algo_org.py`。
+- 只有在兩個實作都各自獨立通過二進位驗證後，timing comparison 才算有效。
+- 固定 benchmark 指令為：
   `python3 run_verify_timed.py 65536 --repeats 1`
-- `count.md` may only be consumed after the file-scope check, the required full
-  verification command, and the required fixed benchmark command all pass.
+- 只有在 file-scope check、必要完整驗證指令、以及固定 benchmark 指令都通過之後，才能消耗 `count.md` 預算。
 
-## Override Rule
+## 覆寫規則
 
-- Only break these rules when the user explicitly asks to modify other files.
+- 只有在使用者明確要求修改其他檔案時，才能違反上述規則。
