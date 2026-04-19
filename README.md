@@ -29,11 +29,18 @@ compares timing results.
 Run the benchmark and verify both implementations:
 
 ```bash
-python3 tools/run_verify_timed.py 512 --repeats 3
+python3 run_verify_timed.py 65536
 ```
 
 Show both generated outputs as well:
 
 ```bash
 python3 tools/run_verify_timed.py 100 --repeats 3 --show-pi
+```
+
+For wave enforcement, the fixed commands are:
+
+```bash
+python3 algorithms/pi_algo_improve-by-agent.py 65536 | python3 tools/verify_pi_bin.py
+python3 run_verify_timed.py 65536 --repeats 1
 ```

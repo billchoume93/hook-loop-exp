@@ -37,6 +37,8 @@ All algorithm optimization work must happen in
 - Python verification must stay independent from the implementation being tested.
 - Validation must pass before an optimization result is accepted.
 - Use `tools/verify_pi_bin.py` or `tools/run_verify_timed.py` for validation.
+- The required full verification command is:
+  `python3 algorithms/pi_algo_improve-by-agent.py 65536 | python3 tools/verify_pi_bin.py`
 
 ## Benchmark Rules
 
@@ -44,6 +46,10 @@ All algorithm optimization work must happen in
   `algorithms/pi_algo_org.py`.
 - Both implementations must pass independent binary verification before timing
   comparison is considered valid.
+- The required fixed benchmark command is:
+  `python3 run_verify_timed.py 65536 --repeats 1`
+- `count.md` may only be consumed after the file-scope check, the required full
+  verification command, and the required fixed benchmark command all pass.
 
 ## Override Rule
 

@@ -16,6 +16,8 @@ Validation policy:
 - Always validate with the pinned binary reference `reference/pi_65536.bin`.
 - Keep Python verification independent from the implementation under test.
 - Validation must pass before an optimization attempt is accepted.
+- The required full verification command is:
+  `python3 algorithms/pi_algo_improve-by-agent.py 65536 | python3 tools/verify_pi_bin.py`
 
 Benchmark policy:
 
@@ -24,6 +26,11 @@ Benchmark policy:
   `algorithms/pi_algo_org.py`.
 - Treat a timing result as valid only if both implementations pass independent
   binary verification.
+- The required fixed benchmark command is:
+  `python3 run_verify_timed.py 65536 --repeats 1`
+- A wave only consumes `count.md` budget after the file-scope check, the
+  required full verification command, and the required fixed benchmark command
+  all pass.
 
 Output policy for each wave:
 
