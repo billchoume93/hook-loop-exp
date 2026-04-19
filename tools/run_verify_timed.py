@@ -7,11 +7,11 @@ import sys
 import time
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
-VERIFY_SCRIPT = BASE_DIR / "verify_pi_bin.py"
+BASE_DIR = Path(__file__).resolve().parent.parent
+VERIFY_SCRIPT = BASE_DIR / "tools" / "verify_pi_bin.py"
 TARGET_SCRIPTS = {
-    "org": BASE_DIR / "pi_algo_org.py",
-    "improve": BASE_DIR / "pi_algo_improve-by-agent.py",
+    "org": BASE_DIR / "algorithms" / "pi_algo_org.py",
+    "improve": BASE_DIR / "algorithms" / "pi_algo_improve-by-agent.py",
 }
 
 

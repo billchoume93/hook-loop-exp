@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-REFERENCE_PATH = Path(__file__).with_name("pi_65536.bin")
+REFERENCE_PATH = Path(__file__).resolve().parent.parent / "reference" / "pi_65536.bin"
 MAX_VERIFIED_DIGITS = 65536
 
 
