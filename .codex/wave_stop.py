@@ -15,6 +15,9 @@ ALLOWED_EDIT_TARGETS = {
 COUNT_FILE = "count.md"
 LOCK_FILE = ".codex/wave.lock"
 STATE_FILE = ".codex/wave_state.json"
+TASK_FILE = "docs/task.md"
+INIT_PROMPT_FILE = "docs/init_prompt.md"
+LOG_FILE = "log.md"
 COUNT_RE = re.compile(r"wave_count\s*=\s*(\d+)")
 FIXED_VERIFY_COMMAND = (
     "python3 algorithms/pi_algo_improve-by-agent.py 65536 | "
@@ -108,9 +111,10 @@ def load_runtime_state(state_path: Path, configured_count: int) -> int:
             isinstance(state_configured, int)
             and isinstance(state_remaining, int)
             and 0 <= state_remaining <= state_configured
+            and state_configured == configured_count
         ):
             return state_remaining
-        # Reinitialize runtime state only when the saved state is invalid.
+        # Reinitialize runtime state when the saved state is invalid or stale.
 
     persist_runtime_state(state_path, configured_count, configured_count)
     return configured_count
@@ -128,6 +132,32 @@ def persist_runtime_state(state_path: Path, configured_count: int, remaining: in
         )
         + "\n",
         encoding="utf-8",
+    )
+
+
+def read_required_text(project_root: Path, relative_path: str) -> str:
+    path = project_root / relative_path
+    return path.read_text(encoding="utf-8").strip()
+
+
+def build_next_wave_prompt(project_root: Path, remaining: int) -> str:
+    task_text = read_required_text(project_root, TASK_FILE)
+    init_prompt_text = read_required_text(project_root, INIT_PROMPT_FILE)
+    log_text = read_required_text(project_root, LOG_FILE)
+
+    return (
+        f"Continue to the next wave. Remaining waves in {COUNT_FILE}: {remaining}.\n"
+        "Execute exactly one optimization wave in this turn.\n"
+        "Before starting, follow the initialization instructions below and read the files again.\n\n"
+        f"[{INIT_PROMPT_FILE}]\n{init_prompt_text}\n\n"
+        f"[{TASK_FILE}]\n{task_text}\n\n"
+        f"[{LOG_FILE}]\n{log_text}\n\n"
+        "Constraints for this turn:\n"
+        "- Execute exactly one wave only.\n"
+        "- Read docs/task.md, docs/init_prompt.md, and log.md before editing.\n"
+        "- Only modify allowed files for a normal optimization wave.\n"
+        "- At the end of the wave, write a short summary and stop naturally.\n"
+        "- Do not start another wave by yourself; the Stop hook will decide."
     )
 
 
@@ -277,17 +307,15 @@ def main() -> int:
             )
             return 0
 
-        next_prompt = (
-            f"Continue to the next wave. Remaining waves in count.md: {remaining}. "
-            "Execute exactly one wave only in this turn. "
-            "At the end of the wave, write a short summary and stop naturally. "
-            "Do not start another wave by yourself; the Stop hook will decide."
-        )
+        next_prompt = build_next_wave_prompt(project_root, remaining)
         emit(
             {
                 "decision": "block",
                 "reason": next_prompt,
-                "systemMessage": f"Auto-continuing next wave. Remaining: {remaining}",
+                "systemMessage": (
+                    "Auto-continuing next wave with task/init/log context injected. "
+                    f"Remaining: {remaining}"
+                ),
             }
         )
         return 0
