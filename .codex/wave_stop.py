@@ -14,6 +14,7 @@ ALLOWED_EDIT_TARGETS = {
 }
 COUNT_FILE = "count.md"
 LOCK_FILE = ".codex/wave.lock"
+STATE_FILE = ".codex/wave_state.json"
 COUNT_RE = re.compile(r"wave_count\s*=\s*(\d+)")
 FIXED_VERIFY_COMMAND = (
     "python3 algorithms/pi_algo_improve-by-agent.py 65536 | "
@@ -27,6 +28,7 @@ IGNORED_PATH_PREFIXES = (
 )
 IGNORED_PATHS = {
     ".codex/wave.lock",
+    STATE_FILE,
 }
 
 
@@ -75,6 +77,57 @@ def run_shell_command(project_root: Path, command: str) -> subprocess.CompletedP
         capture_output=True,
         text=True,
         env=env,
+    )
+
+
+def load_configured_wave_count(count_path: Path) -> int:
+    if not count_path.exists():
+        raise FileNotFoundError(f"{COUNT_FILE} not found")
+
+    text = count_path.read_text(encoding="utf-8")
+    match = COUNT_RE.search(text)
+    if not match:
+        raise ValueError(f"wave_count not found in {COUNT_FILE}")
+    return int(match.group(1))
+
+
+def load_runtime_state(state_path: Path, configured_count: int) -> int:
+    if configured_count < 0:
+        raise ValueError("configured wave_count must be >= 0")
+
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid JSON in {STATE_FILE}: {exc}") from exc
+
+        state_configured = state.get("configured_count")
+        state_remaining = state.get("remaining")
+        if (
+            isinstance(state_configured, int)
+            and isinstance(state_remaining, int)
+            and 0 <= state_remaining <= state_configured
+        ):
+            if state_configured == configured_count:
+                return state_remaining
+        # Reinitialize runtime state when the config changes or the state is invalid.
+
+    persist_runtime_state(state_path, configured_count, configured_count)
+    return configured_count
+
+
+def persist_runtime_state(state_path: Path, configured_count: int, remaining: int) -> None:
+    state_path.write_text(
+        json.dumps(
+            {
+                "configured_count": configured_count,
+                "remaining": remaining,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
     )
 
 
@@ -129,12 +182,15 @@ def main() -> int:
 
     count_path = project_root / COUNT_FILE
     lock_path = project_root / LOCK_FILE
+    state_path = project_root / STATE_FILE
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
     with lock_path.open("w", encoding="utf-8") as lockf:
         fcntl.flock(lockf, fcntl.LOCK_EX)
 
-        if not count_path.exists():
+        try:
+            configured_count = load_configured_wave_count(count_path)
+        except FileNotFoundError:
             emit(
                 {
                     "continue": False,
@@ -143,26 +199,34 @@ def main() -> int:
                 }
             )
             return 0
-
-        text = count_path.read_text(encoding="utf-8")
-        match = COUNT_RE.search(text)
-        if not match:
+        except ValueError as exc:
             emit(
                 {
                     "continue": False,
                     "stopReason": f"wave_count not found in {COUNT_FILE}",
-                    "systemMessage": f"Cannot parse wave_count in {COUNT_FILE}, stop loop.",
+                    "systemMessage": f"{exc}, stop loop.",
                 }
             )
             return 0
 
-        remaining = int(match.group(1))
+        try:
+            remaining = load_runtime_state(state_path, configured_count)
+        except ValueError as exc:
+            emit(
+                {
+                    "continue": False,
+                    "stopReason": f"invalid runtime state in {STATE_FILE}",
+                    "systemMessage": str(exc),
+                }
+            )
+            return 0
+
         if remaining <= 0:
             emit(
                 {
                     "continue": False,
                     "stopReason": "Wave budget exhausted",
-                    "systemMessage": "wave_count is already 0, stop loop.",
+                    "systemMessage": f"remaining waves in {STATE_FILE} is already 0, stop loop.",
                 }
             )
             return 0
@@ -201,8 +265,7 @@ def main() -> int:
             return 0
 
         remaining -= 1
-        new_text = COUNT_RE.sub(f"wave_count={remaining}", text, count=1)
-        count_path.write_text(new_text, encoding="utf-8")
+        persist_runtime_state(state_path, configured_count, remaining)
 
         if remaining == 0:
             emit(
