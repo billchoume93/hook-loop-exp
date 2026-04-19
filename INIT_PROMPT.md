@@ -1,28 +1,27 @@
-# Wave Loop Initialization Prompt
+# Continuous Optimization Init Prompt
 
-請開始進行這個專案的連續推論實驗。
+Before starting each optimization wave, read `task.md` and follow it strictly.
 
-你現在在一個以 `count.md` 控制剩餘輪數的 wave loop 架構中工作。`count.md` 裡的 `wave_count=N` 代表剩餘可執行輪數。每當你自然完成一輪並停止後，Stop hook 會自動決定是否進入下一輪；因此你在單一回合內絕對只能執行一輪，不能自行連跑多輪。
+Wave goal:
 
-本回合的任務要求如下：
+- Optimize only `pi_algo_improve-by-agent.py`.
+- Do not modify any other repository file unless the user explicitly asks for it.
 
-1. 先讀取 `count.md`，確認目前剩餘輪數。
-2. 本回合只執行一輪推論與產出，不要預支下一輪工作。
-3. 這一輪的核心目標是：圍繞目前主題做一次明確、可檢查、可累積的推進。
-4. 如果專案中已經存在先前輪次的輸出，先快速讀取並銜接，不要重做已完成內容。
-5. 本輪過程中，盡量把結論寫成可累積的外部化產物，例如筆記、摘要、假設、待驗證問題、資料表、實驗紀錄或程式碼。
-6. 如果需要修改檔案，直接修改；如果需要新增本輪紀錄，請建立或更新適合持續累積的檔案。
-7. 在本輪結束前，輸出一段簡短 summary，內容至少包含：
-   - 本輪做了什麼
-   - 產出了哪些檔案或變更
-   - 下一輪最合理的切入點是什麼
-8. 完成 summary 後自然停止，不要主動開始下一輪，不要在訊息中要求自己繼續。是否續跑由 Stop hook 決定。
+Validation policy:
 
-執行原則：
+- Never validate by comparing one algorithm against the other.
+- Always validate with the pinned binary reference `pi_65536.bin`.
+- Keep Python verification independent from the implementation under test.
 
-- 一輪只做一個合理範圍的推進，不要試圖在單輪內完成整個研究。
-- 優先做能讓下一輪更容易延續的工作。
-- 如果遇到不確定性，明確寫下假設與待驗證點。
-- 如果沒有明確主題可延伸，先建立本專案的研究方向、問題拆解與後續輪次計畫。
+Benchmark policy:
 
-本回合現在開始。先自行判讀目前專案狀態，再執行恰好一輪。
+- Use `run_verify_timed.py` to compare `pi_algo_improve-by-agent.py` against
+  `pi_algo_org.py`.
+- Treat a timing result as valid only if both implementations pass independent
+  binary verification.
+
+Output policy for each wave:
+
+- Make one scoped improvement only.
+- End with a short summary of what changed, what was verified, and the next
+  optimization direction.
