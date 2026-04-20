@@ -22,7 +22,7 @@
 ## Campaign 控制面
 
 - 多-wave campaign 由 `.codex/wave_request.json` 啟動。
-- 建立或修改新的 request 之後，必須先執行 `python3 .codex/wave-control-init.py`
+- 建立或修改新的 request 之後，必須先執行 `python3 .codex/wave_control_init.py`
   來校正 `.codex/wave_state.json`，再開始 wave 1。
 - 啟動新 campaign 時，必須在 `.codex/wave_request.json` 填入新的 `request_id`、
   `requested_waves`、`goal`、`continue_command`、`created_at`。
@@ -73,6 +73,8 @@
   - 相對於 `org` 的 ratio
   - 本輪是否創下新的最佳結果
   - 本輪修改的簡短說明
+- 如果本輪沒有對 `algorithms/pi_algo_improve-by-agent.py` 產生有效變更，但也沒有修改不允許的檔案，
+  controller 會把這輪記為 diagnosis-only wave，將問題與下一步建議追加到 `log.md`。
 
 ## 正確性規則
 
@@ -95,6 +97,8 @@
 - fixed benchmark 是 compatibility gate，不是 trusted best 判定依據。
 - trusted best 判定由 controller 的 order-balanced confirmation benchmark 決定。
 - 只有在 file-scope check、必要完整驗證指令、exact 驗證、以及固定 benchmark 指令都通過之後，才能消耗 controller-owned wave budget。
+- 如果 file-scope check 顯示本輪沒有改到 `algorithms/pi_algo_improve-by-agent.py`，controller 可以把這輪當成
+  diagnosis-only wave：不跑 benchmark，仍消耗一個 wave budget，並自動排隊下一輪。
 
 ## 覆寫規則
 

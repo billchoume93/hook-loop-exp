@@ -3,7 +3,7 @@
 在開始每一輪 optimization wave 之前：
 
 - 如果這是新 campaign 的第一輪，先確認已執行
-  `python3 .codex/wave-control-init.py`，讓 controller state 對齊新的 request。
+  `python3 .codex/wave_control_init.py`，讓 controller state 對齊新的 request。
 - 先閱讀 `.codex/wave_request.json`，確認目前 active campaign 的 `request_id`、
   `requested_waves`、`goal`、`continue_command`。
 - 先閱讀 `.codex/wave_state.json`，確認 controller state 已和目前 request 對齊；
@@ -13,3 +13,5 @@
 - 再閱讀 `log.md`，確認目前 best known result，並將其視為本輪要挑戰的目標。
 - 只執行一個 wave，完成後自然停止，讓 Stop hook 決定是否繼續下一輪。
 - org 基準量測速度比較緩慢，第一輪量測完可以把結果放在`log.md`裡面給後續的wave進行查詢就好。
+- 如果本輪最後沒有對 `algorithms/pi_algo_improve-by-agent.py` 做出有效修改，Stop hook 會把這輪記成
+  diagnosis-only wave：把問題與下一步方向追加到 `log.md`、消耗一個 wave budget，並視剩餘 wave 數決定是否續跑。

@@ -67,7 +67,7 @@ Start a new multi-wave campaign by editing `.codex/wave_request.json` with:
 Then initialize the control plane explicitly:
 
 ```bash
-python3 .codex/wave-control-init.py
+python3 .codex/wave_control_init.py
 ```
 
 The initializer syncs `.codex/wave_state.json` to wave 1 in `queued` status,
@@ -78,12 +78,12 @@ next Codex CLI run.
 If you want the initializer to launch the first Codex CLI process itself, use:
 
 ```bash
-python3 .codex/wave-control-init.py --run
+python3 .codex/wave_control_init.py --run
 ```
 
 Campaign rules:
 
-- `.codex/wave-control-init.py` is the supported bootstrap entrypoint for
+- `.codex/wave_control_init.py` is the supported bootstrap entrypoint for
   wave 1.
 - After initialization, the Stop hook is the only auto-continue entrypoint for
   later waves.

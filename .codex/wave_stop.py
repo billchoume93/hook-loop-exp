@@ -19,7 +19,6 @@ ALLOWED_WAVE_EDIT_TARGETS = {
 }
 ALLOWED_CONTROL_PLANE_DIRTY_TARGETS = {
     ".codex/hooks.json",
-    ".codex/wave-control-init.py",
     ".codex/wave_control_init.py",
     ".codex/wave_stop.py",
     "README.md",
@@ -42,10 +41,11 @@ IMPROVE_SCRIPT = "algorithms/pi_algo_improve-by-agent.py"
 FIXED_VERIFY_COMMAND = f"python3 {IMPROVE_SCRIPT} 65536 | python3 {VERIFY_SCRIPT}"
 FIXED_BENCHMARK_COMMAND = "python3 run_verify_timed.py 65536 --repeats 1"
 FIXED_DIGITS = 65536
+HOOKS_FILE = ".codex/hooks.json"
 ACTIVE_STATUSES = {"queued", "running", "validating"}
 TERMINAL_STATUSES = {"idle", "completed", "failed", "aborted"}
 TRUSTED_BENCHMARK_ROUNDS = (("org", "improve"), ("improve", "org"), ("org", "improve"))
-STOP_HOOK_TIMEOUT_SECONDS = 180
+DEFAULT_STOP_HOOK_TIMEOUT_SECONDS = 180
 STOP_HOOK_SAFETY_MARGIN_SECONDS = 15
 IGNORED_PATH_PREFIXES = (
     "__pycache__/",
@@ -127,6 +127,20 @@ def append_journal(project_root: Path, event: dict[str, object]) -> None:
         handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def safe_subprocess_text(args: list[str], project_root: Path) -> str:
+    try:
+        completed = subprocess.run(
+            args,
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return f"unavailable: {exc}"
+    return completed.stdout.strip()
+
+
 def git_changed_paths(project_root: Path) -> list[str]:
     completed = subprocess.run(
         ["git", "status", "--short"],
@@ -148,6 +162,21 @@ def git_changed_paths(project_root: Path) -> list[str]:
             continue
         changed_paths.append(path)
     return changed_paths
+
+
+def safe_git_head(project_root: Path) -> str:
+    return safe_subprocess_text(["git", "rev-parse", "HEAD"], project_root)
+
+
+def safe_git_branch(project_root: Path) -> str:
+    return safe_subprocess_text(["git", "rev-parse", "--abbrev-ref", "HEAD"], project_root)
+
+
+def safe_git_changed_paths(project_root: Path) -> list[str]:
+    try:
+        return git_changed_paths(project_root)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return [f"unavailable: {exc}"]
 
 
 def capture_worktree_snapshot(project_root: Path) -> dict[str, str]:
@@ -343,6 +372,35 @@ def persist_state(project_root: Path, state: dict[str, object]) -> None:
     atomic_write_text(project_root / STATE_FILE, json.dumps(state, ensure_ascii=False, indent=2) + "\n")
 
 
+def load_stop_hook_timeout_seconds(project_root: Path) -> int:
+    hooks_path = project_root / HOOKS_FILE
+    if not hooks_path.exists():
+        return DEFAULT_STOP_HOOK_TIMEOUT_SECONDS
+    try:
+        data = json.loads(hooks_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return DEFAULT_STOP_HOOK_TIMEOUT_SECONDS
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return DEFAULT_STOP_HOOK_TIMEOUT_SECONDS
+    stop_entries = hooks.get("Stop")
+    if not isinstance(stop_entries, list):
+        return DEFAULT_STOP_HOOK_TIMEOUT_SECONDS
+    for entry in stop_entries:
+        if not isinstance(entry, dict):
+            continue
+        nested_hooks = entry.get("hooks")
+        if not isinstance(nested_hooks, list):
+            continue
+        for hook in nested_hooks:
+            if not isinstance(hook, dict):
+                continue
+            timeout = hook.get("timeout")
+            if isinstance(timeout, int) and timeout > 0:
+                return timeout
+    return DEFAULT_STOP_HOOK_TIMEOUT_SECONDS
+
+
 def compare_exact_bytes(actual_text: str, expected: bytes) -> tuple[bool, str]:
     actual = actual_text.encode("ascii")
     if len(actual) != len(expected):
@@ -370,24 +428,13 @@ def compute_active_wave_paths(project_root: Path, baseline_snapshot: dict[str, s
     return active_paths
 
 
-def require_only_allowed_wave_targets(project_root: Path, baseline_snapshot: dict[str, str]) -> tuple[bool, str]:
+def classify_wave_targets(
+    project_root: Path,
+    baseline_snapshot: dict[str, str],
+) -> tuple[list[str], list[str], bool]:
     active_wave_paths = compute_active_wave_paths(project_root, baseline_snapshot)
     disallowed = [path for path in active_wave_paths if path not in ALLOWED_WAVE_EDIT_TARGETS]
-    if disallowed:
-        return (
-            False,
-            "disallowed modified files: "
-            + ", ".join(disallowed)
-            + "; only "
-            + ", ".join(sorted(ALLOWED_WAVE_EDIT_TARGETS))
-            + " may change during a normal wave",
-        )
-    if IMPROVE_SCRIPT not in active_wave_paths:
-        return (
-            False,
-            f"expected a change in {IMPROVE_SCRIPT} before consuming a wave",
-        )
-    return (True, "")
+    return (active_wave_paths, disallowed, IMPROVE_SCRIPT in active_wave_paths)
 
 
 def require_fixed_verify(project_root: Path) -> tuple[bool, str]:
@@ -479,12 +526,14 @@ def run_trusted_benchmark(project_root: Path, reference_bytes: bytes) -> Tuple[O
 
 
 def should_run_trusted_benchmark(
+    project_root: Path,
     compatibility_result: dict[str, float],
     *,
     started_at: float,
 ) -> tuple[bool, Optional[str]]:
     elapsed = time.perf_counter() - started_at
-    remaining_budget = STOP_HOOK_TIMEOUT_SECONDS - STOP_HOOK_SAFETY_MARGIN_SECONDS - elapsed
+    stop_hook_timeout_seconds = load_stop_hook_timeout_seconds(project_root)
+    remaining_budget = stop_hook_timeout_seconds - STOP_HOOK_SAFETY_MARGIN_SECONDS - elapsed
     estimated_trusted_seconds = (
         len(TRUSTED_BENCHMARK_ROUNDS)
         * (compatibility_result["org_execution_ms"] + compatibility_result["improve_execution_ms"])
@@ -556,6 +605,60 @@ def build_log_entry(
     return "\n".join(lines) + "\n"
 
 
+def build_diagnostic_log_entry(*, wave_label: str, summary: str, notes: str) -> str:
+    lines = [
+        f"### {wave_label}",
+        "",
+        f"- Compatibility benchmark command: `n/a`",
+        f"- Decision benchmark command: `n/a`",
+        "- Compatibility `improve` execution_ms: `n/a`",
+        "- Compatibility `org` execution_ms: `n/a`",
+        "- Compatibility execution ratio vs `org`: `n/a`",
+        "- Decision `improve` execution_ms: `n/a`",
+        "- Decision `org` execution_ms: `n/a`",
+        "- Decision execution ratio vs `org`: `n/a`",
+        "- New best: `no`",
+        f"- Notes: {summary} {notes}".strip(),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def append_wave_history_entry(project_root: Path, entry: str, *, current_best_text: Optional[str] = None) -> None:
+    log_path = project_root / LOG_FILE
+    existing_text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+    if current_best_text is None:
+        current_best_match = re.search(r"## Current Best\n\n.*?\n## Wave History\n", existing_text, re.S)
+        if current_best_match is not None:
+            current_best_text = current_best_match.group(0).replace("## Wave History\n", "").strip() + "\n"
+        else:
+            current_best_text = (
+                "## Current Best\n\n"
+                "- Wave: none yet\n"
+                f"- Compatibility benchmark command: `{FIXED_BENCHMARK_COMMAND}`\n"
+                "- Decision benchmark command: "
+                "`controller median of order-balanced direct runs (org/improve, improve/org, org/improve)`\n"
+                "- `improve` execution_ms: n/a\n"
+                "- `org` execution_ms: n/a\n"
+                "- execution ratio vs `org`: n/a\n"
+                "- New best: n/a\n"
+                "- Notes: initialize this file on the first trusted new best\n"
+            )
+    history_match = re.search(r"## Wave History\n\n(.*)\Z", existing_text, re.S)
+    history_body = "" if history_match is None else history_match.group(1).strip()
+    if history_body:
+        history_body = history_body + "\n\n" + entry.strip() + "\n"
+    else:
+        history_body = entry.strip() + "\n"
+    rewritten = (
+        "# Optimization Log\n\n"
+        "This file records trusted benchmark results across request-driven waves.\n\n"
+        f"{current_best_text}\n"
+        "## Wave History\n\n"
+        f"{history_body}"
+    )
+    atomic_write_text(log_path, rewritten)
+
+
 def update_log(
     project_root: Path,
     *,
@@ -606,22 +709,82 @@ def update_log(
         new_best=new_best,
         notes=notes,
     )
-    history_match = re.search(r"## Wave History\n\n(.*)\Z", existing_text, re.S)
-    history_body = "" if history_match is None else history_match.group(1).strip()
-    if history_body:
-        history_body = history_body + "\n\n" + entry.strip() + "\n"
-    else:
-        history_body = entry.strip() + "\n"
-    current_best_text = current_best_block
-    rewritten = (
-        "# Optimization Log\n\n"
-        "This file records trusted benchmark results across request-driven waves.\n\n"
-        f"{current_best_text}\n"
-        "## Wave History\n\n"
-        f"{history_body}"
-    )
-    atomic_write_text(log_path, rewritten)
+    append_wave_history_entry(project_root, entry, current_best_text=current_best_block)
     return new_best
+
+
+def build_missing_improve_notes(active_wave_paths: list[str]) -> str:
+    if not active_wave_paths:
+        return (
+            "No file changed relative to the campaign baseline. "
+            f"Next wave should make one concrete edit to {IMPROVE_SCRIPT} and rerun validation."
+        )
+    return (
+        "Active wave changes did not include the improve script "
+        f"({', '.join(active_wave_paths)}). "
+        f"Next wave should carry the diagnosis forward into a concrete edit to {IMPROVE_SCRIPT}."
+    )
+
+
+def complete_diagnostic_wave(
+    project_root: Path,
+    request: dict[str, object],
+    state: dict[str, object],
+    *,
+    summary: str,
+    notes: str,
+    changed_paths: list[str],
+) -> tuple[dict[str, object], str]:
+    wave_label = f"{state['request_id']}/wave-{state['current_wave']}"
+    append_wave_history_entry(
+        project_root,
+        build_diagnostic_log_entry(wave_label=wave_label, summary=summary, notes=notes),
+    )
+    next_state = dict(state)
+    next_state["attempted_waves"] += 1
+    next_state["successful_waves"] += 1
+    next_state["remaining_waves"] -= 1
+    next_state["last_result"] = {
+        "kind": "wave_diagnostic",
+        "wave": wave_label,
+        "summary": summary,
+        "details": {
+            "category": "controller",
+            "reason": summary,
+            "notes": notes,
+            "changed_paths": changed_paths,
+        },
+        "benchmark_result": None,
+        "new_best": False,
+    }
+    next_state["last_stop_reason"] = None
+    next_state["current_wave"] = (
+        next_state["successful_waves"] + 1 if next_state["remaining_waves"] > 0 else next_state["current_wave"]
+    )
+    next_state["updated_at"] = now_utc()
+    next_state["status"] = "completed" if next_state["remaining_waves"] == 0 else "queued"
+    persist_state(project_root, next_state)
+    append_journal(
+        project_root,
+        {
+            "timestamp": now_utc(),
+            "request_id": state["request_id"],
+            "wave": state["current_wave"],
+            "event_type": "wave_diagnostic_no_code_change",
+            "git_head": git_head(project_root),
+            "branch": git_branch(project_root),
+            "changed_paths": changed_paths,
+            "validation_result": "diagnosis_only",
+            "benchmark_result": None,
+            "budget_consumed": True,
+            "stop_reason": summary,
+        },
+    )
+    message = (
+        f"Recorded diagnosis-only wave for request {request['request_id']} wave {state['current_wave']}: "
+        f"{summary} {notes}"
+    ).strip()
+    return (next_state, message)
 
 
 def build_next_wave_prompt(project_root: Path, request: dict[str, object], state: dict[str, object]) -> str:
@@ -763,9 +926,9 @@ def fail_run(project_root: Path, state: dict[str, object], reason: str, *, reque
             "request_id": failed_state["request_id"],
             "wave": failed_state["current_wave"],
             "event_type": "wave_failed",
-            "git_head": git_head(project_root),
-            "branch": git_branch(project_root),
-            "changed_paths": git_changed_paths(project_root),
+            "git_head": safe_git_head(project_root),
+            "branch": safe_git_branch(project_root),
+            "changed_paths": safe_git_changed_paths(project_root),
             "validation_result": "failed",
             "benchmark_result": None,
             "budget_consumed": False,
@@ -818,7 +981,7 @@ def bootstrap_run(project_root: Path, request: dict[str, object], request_sha: s
             "event_type": "run_initialized",
             "git_head": state["base_head"],
             "branch": state["base_branch"],
-            "changed_paths": git_changed_paths(project_root),
+            "changed_paths": safe_git_changed_paths(project_root),
             "validation_result": "n/a",
             "benchmark_result": None,
             "budget_consumed": False,
@@ -838,6 +1001,39 @@ def resume_failed_campaign(project_root: Path, request: dict[str, object], reque
     resumed["updated_at"] = now_utc()
     persist_state(project_root, resumed)
     return launch_continue_command(project_root, request, resumed)
+
+
+def recover_stale_validating_campaign(
+    project_root: Path,
+    request: dict[str, object],
+    request_sha: str,
+    state: dict[str, object],
+) -> int:
+    recovered = dict(state)
+    recovered["version"] = 2
+    recovered["request_sha256"] = request_sha
+    recovered["status"] = "queued"
+    recovered["current_wave"] = recovered["successful_waves"] + 1 if recovered["remaining_waves"] > 0 else 0
+    recovered["last_stop_reason"] = "Recovered stale validating state"
+    recovered["updated_at"] = now_utc()
+    persist_state(project_root, recovered)
+    append_journal(
+        project_root,
+        {
+            "timestamp": now_utc(),
+            "request_id": request["request_id"],
+            "wave": recovered["current_wave"],
+            "event_type": "wave_recovered_stale_validating",
+            "git_head": safe_git_head(project_root),
+            "branch": safe_git_branch(project_root),
+            "changed_paths": safe_git_changed_paths(project_root),
+            "validation_result": "recovered",
+            "benchmark_result": None,
+            "budget_consumed": False,
+            "stop_reason": "Recovered stale validating state",
+        },
+    )
+    return launch_continue_command(project_root, request, recovered)
 
 
 def validate_active_bindings(project_root: Path, request: dict[str, object], request_sha: str, state: dict[str, object]) -> Optional[str]:
@@ -865,170 +1061,216 @@ def main() -> int:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     pending_continue: Optional[Tuple[dict[str, object], dict[str, object]]] = None
 
-    with lock_path.open("w", encoding="utf-8") as lockf:
-        fcntl.flock(lockf, fcntl.LOCK_EX)
+    try:
+        with lock_path.open("w", encoding="utf-8") as lockf:
+            fcntl.flock(lockf, fcntl.LOCK_EX)
 
-        try:
-            state = load_state(project_root)
-            request, request_sha = load_request(project_root)
-        except ValueError as exc:
-            emit({"continue": False, "stopReason": "Controller state invalid", "systemMessage": str(exc)})
-            return 0
+            try:
+                state = load_state(project_root)
+                request, request_sha = load_request(project_root)
+            except ValueError as exc:
+                emit({"continue": False, "stopReason": "Controller state invalid", "systemMessage": str(exc)})
+                return 0
 
-        if request is None:
-            if state["status"] in ACTIVE_STATUSES:
-                return fail_run(project_root, state, f"active campaign requires {REQUEST_FILE}")
-            emit(
-                {
-                    "continue": False,
-                    "stopReason": "No active wave request",
-                    "systemMessage": f"Set a new request_id and requested_waves in {REQUEST_FILE} to start a campaign.",
-                }
-            )
-            return 0
-
-        if state["status"] in TERMINAL_STATUSES:
-            if state["request_id"] == request["request_id"] and state["status"] == "completed":
+            if request is None:
+                if state["status"] in ACTIVE_STATUSES:
+                    return fail_run(project_root, state, f"active campaign requires {REQUEST_FILE}")
                 emit(
                     {
                         "continue": False,
-                        "stopReason": "Campaign already terminal",
-                        "systemMessage": (
-                            f"Request {request['request_id']} is already {state['status']}. "
-                            f"Create a new request_id in {REQUEST_FILE} to start another campaign."
-                        ),
+                        "stopReason": "No active wave request",
+                        "systemMessage": f"Set a new request_id and requested_waves in {REQUEST_FILE} to start a campaign.",
                     }
                 )
                 return 0
-            if state["request_id"] == request["request_id"] and state["status"] in {"failed", "aborted"}:
+
+            if state["status"] in TERMINAL_STATUSES:
+                if state["request_id"] == request["request_id"] and state["status"] == "completed":
+                    emit(
+                        {
+                            "continue": False,
+                            "stopReason": "Campaign already terminal",
+                            "systemMessage": (
+                                f"Request {request['request_id']} is already {state['status']}. "
+                                f"Create a new request_id in {REQUEST_FILE} to start another campaign."
+                            ),
+                        }
+                    )
+                    return 0
+                if (
+                    state["request_id"] == request["request_id"]
+                    and state["status"] in {"failed", "aborted"}
+                    and state["remaining_waves"] > 0
+                ):
+                    return resume_failed_campaign(project_root, request, request_sha, state)
                 emit(
                     {
                         "continue": False,
                         "stopReason": "Campaign requires initialization",
                         "systemMessage": (
-                            f"Request {request['request_id']} is {state['status']}. "
-                            f"Run `python3 .codex/wave-control-init.py` to reinitialize wave 1."
+                            f"Request {request['request_id']} is not initialized in {STATE_FILE}. "
+                            f"Run `python3 .codex/wave_control_init.py` before starting wave 1."
                         ),
                     }
                 )
                 return 0
-            emit(
-                {
-                    "continue": False,
-                    "stopReason": "Campaign requires initialization",
-                    "systemMessage": (
-                        f"Request {request['request_id']} is not initialized in {STATE_FILE}. "
-                        f"Run `python3 .codex/wave-control-init.py` before starting wave 1."
-                    ),
-                }
+
+            if (
+                state["request_id"] == request["request_id"]
+                and state["status"] == "validating"
+                and state["remaining_waves"] > 0
+            ):
+                return recover_stale_validating_campaign(project_root, request, request_sha, state)
+
+            binding_error = validate_active_bindings(project_root, request, request_sha, state)
+            if binding_error is not None:
+                return fail_run(project_root, state, binding_error)
+
+            validating_state = dict(state)
+            validating_state["status"] = "validating"
+            validating_state["updated_at"] = now_utc()
+            persist_state(project_root, validating_state)
+
+            active_wave_paths, disallowed_paths, has_improve_change = classify_wave_targets(
+                project_root,
+                validating_state["baseline_snapshot"],
             )
-            return 0
+            if disallowed_paths:
+                allowed_reason = (
+                    "disallowed modified files: "
+                    + ", ".join(disallowed_paths)
+                    + "; only "
+                    + ", ".join(sorted(ALLOWED_WAVE_EDIT_TARGETS))
+                    + " may change during a normal wave"
+                )
+                return fail_run(project_root, validating_state, allowed_reason)
+            if not has_improve_change:
+                summary = f"expected a change in {IMPROVE_SCRIPT} before consuming a wave"
+                notes = build_missing_improve_notes(active_wave_paths)
+                next_state, _ = complete_diagnostic_wave(
+                    project_root,
+                    request,
+                    validating_state,
+                    summary=summary,
+                    notes=notes,
+                    changed_paths=safe_git_changed_paths(project_root),
+                )
+                if next_state["remaining_waves"] == 0:
+                    emit(
+                        {
+                            "continue": False,
+                            "stopReason": "Completed final wave",
+                            "systemMessage": (
+                                f"Request {state['request_id']} completed all {state['requested_waves']} waves; "
+                                "final wave was recorded as diagnosis-only."
+                            ),
+                        }
+                    )
+                    return 0
+                pending_continue = (request, next_state)
+            else:
+                reference_bytes = (project_root / REFERENCE_FILE).read_bytes()
+                improve_output, _ = run_script_capture(project_root, IMPROVE_SCRIPT, FIXED_DIGITS)
+                exact_ok, exact_reason = compare_exact_bytes(improve_output, reference_bytes)
+                if not exact_ok:
+                    return fail_run(project_root, validating_state, exact_reason)
 
-        binding_error = validate_active_bindings(project_root, request, request_sha, state)
-        if binding_error is not None:
-            return fail_run(project_root, state, binding_error)
+                verify_ok, verify_reason = require_fixed_verify(project_root)
+                if not verify_ok:
+                    return fail_run(project_root, validating_state, verify_reason)
 
-        validating_state = dict(state)
-        validating_state["status"] = "validating"
-        validating_state["updated_at"] = now_utc()
-        persist_state(project_root, validating_state)
+                benchmark_ok, compatibility_result, benchmark_reason = require_fixed_benchmark(project_root)
+                if not benchmark_ok or compatibility_result is None:
+                    return fail_run(project_root, validating_state, benchmark_reason)
 
-        allowed_ok, allowed_reason = require_only_allowed_wave_targets(
-            project_root,
-            validating_state["baseline_snapshot"],
-        )
-        if not allowed_ok:
-            return fail_run(project_root, validating_state, allowed_reason)
+                trusted_result = None
+                trusted_error = None
+                run_trusted, skip_reason = should_run_trusted_benchmark(
+                    project_root,
+                    compatibility_result,
+                    started_at=hook_started_at,
+                )
+                if run_trusted:
+                    trusted_result, trusted_error = run_trusted_benchmark(project_root, reference_bytes)
+                else:
+                    trusted_error = skip_reason
+                notes = (
+                    f"Controller-validated wave for request {state['request_id']}."
+                    if trusted_error is None
+                    else f"Controller-validated wave for request {state['request_id']}; trusted benchmark unavailable: {trusted_error}"
+                )
+                wave_label = f"{state['request_id']}/wave-{state['current_wave']}"
+                new_best = update_log(
+                    project_root,
+                    wave_label=wave_label,
+                    compatibility=compatibility_result,
+                    trusted=trusted_result,
+                    notes=notes,
+                )
 
-        reference_bytes = (project_root / REFERENCE_FILE).read_bytes()
-        improve_output, _ = run_script_capture(project_root, IMPROVE_SCRIPT, FIXED_DIGITS)
-        exact_ok, exact_reason = compare_exact_bytes(improve_output, reference_bytes)
-        if not exact_ok:
-            return fail_run(project_root, validating_state, exact_reason)
-
-        verify_ok, verify_reason = require_fixed_verify(project_root)
-        if not verify_ok:
-            return fail_run(project_root, validating_state, verify_reason)
-
-        benchmark_ok, compatibility_result, benchmark_reason = require_fixed_benchmark(project_root)
-        if not benchmark_ok or compatibility_result is None:
-            return fail_run(project_root, validating_state, benchmark_reason)
-
-        trusted_result = None
-        trusted_error = None
-        run_trusted, skip_reason = should_run_trusted_benchmark(
-            compatibility_result,
-            started_at=hook_started_at,
-        )
-        if run_trusted:
-            trusted_result, trusted_error = run_trusted_benchmark(project_root, reference_bytes)
-        else:
-            trusted_error = skip_reason
-        notes = (
-            f"Controller-validated wave for request {state['request_id']}."
-            if trusted_error is None
-            else f"Controller-validated wave for request {state['request_id']}; trusted benchmark unavailable: {trusted_error}"
-        )
-        wave_label = f"{state['request_id']}/wave-{state['current_wave']}"
-        new_best = update_log(
-            project_root,
-            wave_label=wave_label,
-            compatibility=compatibility_result,
-            trusted=trusted_result,
-            notes=notes,
-        )
-
-        next_state = dict(validating_state)
-        next_state["attempted_waves"] += 1
-        next_state["successful_waves"] += 1
-        next_state["remaining_waves"] -= 1
-        next_state["last_result"] = {
-            "wave": wave_label,
-            "compatibility": compatibility_result,
-            "trusted": trusted_result,
-            "trusted_error": trusted_error,
-            "new_best": new_best,
-        }
-        next_state["last_stop_reason"] = None
-        next_state["current_wave"] = (
-            next_state["successful_waves"] + 1 if next_state["remaining_waves"] > 0 else next_state["current_wave"]
-        )
-        next_state["updated_at"] = now_utc()
-        next_state["status"] = "completed" if next_state["remaining_waves"] == 0 else "queued"
-        persist_state(project_root, next_state)
-
-        append_journal(
-            project_root,
-            {
-                "timestamp": now_utc(),
-                "request_id": state["request_id"],
-                "wave": state["current_wave"],
-                "event_type": "wave_valid_new_best" if new_best else "wave_valid_no_improvement",
-                "git_head": git_head(project_root),
-                "branch": git_branch(project_root),
-                "changed_paths": git_changed_paths(project_root),
-                "validation_result": "passed",
-                "benchmark_result": {
+                next_state = dict(validating_state)
+                next_state["attempted_waves"] += 1
+                next_state["successful_waves"] += 1
+                next_state["remaining_waves"] -= 1
+                next_state["last_result"] = {
+                    "wave": wave_label,
                     "compatibility": compatibility_result,
                     "trusted": trusted_result,
                     "trusted_error": trusted_error,
-                },
-                "budget_consumed": True,
-                "stop_reason": None,
-            },
-        )
-
-        if next_state["remaining_waves"] == 0:
-            emit(
-                {
-                    "continue": False,
-                    "stopReason": "Completed final wave",
-                    "systemMessage": f"Request {state['request_id']} completed all {state['requested_waves']} waves.",
+                    "new_best": new_best,
                 }
-            )
-            return 0
+                next_state["last_stop_reason"] = None
+                next_state["current_wave"] = (
+                    next_state["successful_waves"] + 1 if next_state["remaining_waves"] > 0 else next_state["current_wave"]
+                )
+                next_state["updated_at"] = now_utc()
+                next_state["status"] = "completed" if next_state["remaining_waves"] == 0 else "queued"
+                persist_state(project_root, next_state)
 
-        pending_continue = (request, next_state)
+                append_journal(
+                    project_root,
+                    {
+                        "timestamp": now_utc(),
+                        "request_id": state["request_id"],
+                        "wave": state["current_wave"],
+                        "event_type": "wave_valid_new_best" if new_best else "wave_valid_no_improvement",
+                        "git_head": safe_git_head(project_root),
+                        "branch": safe_git_branch(project_root),
+                        "changed_paths": safe_git_changed_paths(project_root),
+                        "validation_result": "passed",
+                        "benchmark_result": {
+                            "compatibility": compatibility_result,
+                            "trusted": trusted_result,
+                            "trusted_error": trusted_error,
+                        },
+                        "budget_consumed": True,
+                        "stop_reason": None,
+                    },
+                )
+
+                if next_state["remaining_waves"] == 0:
+                    emit(
+                        {
+                            "continue": False,
+                            "stopReason": "Completed final wave",
+                            "systemMessage": f"Request {state['request_id']} completed all {state['requested_waves']} waves.",
+                        }
+                    )
+                    return 0
+
+                pending_continue = (request, next_state)
+    except Exception as exc:
+        current_state = locals().get("state")
+        if isinstance(current_state, dict):
+            return fail_run(project_root, current_state, f"Stop hook crashed: {type(exc).__name__}: {exc}")
+        emit(
+            {
+                "continue": False,
+                "stopReason": "Stop hook crashed",
+                "systemMessage": f"Stop hook crashed before controller state loaded: {type(exc).__name__}: {exc}",
+            }
+        )
+        return 0
 
     if pending_continue is not None:
         continue_request, continue_state = pending_continue

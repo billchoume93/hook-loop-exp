@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
 import argparse
 import datetime as dt
-import json
 from pathlib import Path
 
 from wave_stop import (
-    REQUEST_FILE,
-    STATE_FILE,
     capture_worktree_snapshot,
     continue_command_env,
     git_branch,
     git_changed_paths,
     git_head,
     launch_continue_command,
+    load_stop_hook_timeout_seconds,
     load_request,
     load_state,
     materialize_wave_prompt,
     now_utc,
     persist_state,
+    REQUEST_FILE,
     resolve_project_root,
+    STATE_FILE,
 )
-
-HOOKS_FILE = ".codex/hooks.json"
-DEFAULT_STALE_VALIDATING_SECONDS = 180
 
 
 def build_initialized_state(project_root: Path, request: dict[str, object], request_sha: str) -> dict[str, object]:
@@ -48,6 +45,25 @@ def build_initialized_state(project_root: Path, request: dict[str, object], requ
         "created_at": timestamp,
         "updated_at": timestamp,
     }
+
+
+def build_recovered_state(
+    project_root: Path,
+    request: dict[str, object],
+    request_sha: str,
+    state: dict[str, object],
+) -> dict[str, object]:
+    recovered = dict(state)
+    recovered["version"] = 2
+    recovered["request_id"] = request["request_id"]
+    recovered["request_sha256"] = request_sha
+    recovered["requested_waves"] = request["requested_waves"]
+    recovered["status"] = "queued"
+    recovered["current_wave"] = recovered["successful_waves"] + 1 if recovered["remaining_waves"] > 0 else 0
+    recovered["last_stop_reason"] = "Recovered stale validating state"
+    recovered["updated_at"] = now_utc()
+    recovered["worktree_path"] = str(project_root)
+    return recovered
 
 
 def shell_preview(command: str, env: dict[str, str]) -> str:
@@ -83,35 +99,6 @@ def parse_utc_timestamp(value: object) -> dt.datetime | None:
         return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-
-
-def load_stop_hook_timeout_seconds(project_root: Path) -> int:
-    hooks_path = project_root / HOOKS_FILE
-    if not hooks_path.exists():
-        return DEFAULT_STALE_VALIDATING_SECONDS
-    try:
-        data = json.loads(hooks_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return DEFAULT_STALE_VALIDATING_SECONDS
-    hooks = data.get("hooks")
-    if not isinstance(hooks, dict):
-        return DEFAULT_STALE_VALIDATING_SECONDS
-    stop_entries = hooks.get("Stop")
-    if not isinstance(stop_entries, list):
-        return DEFAULT_STALE_VALIDATING_SECONDS
-    for entry in stop_entries:
-        if not isinstance(entry, dict):
-            continue
-        nested_hooks = entry.get("hooks")
-        if not isinstance(nested_hooks, list):
-            continue
-        for hook in nested_hooks:
-            if not isinstance(hook, dict):
-                continue
-            timeout = hook.get("timeout")
-            if isinstance(timeout, int) and timeout > 0:
-                return timeout
-    return DEFAULT_STALE_VALIDATING_SECONDS
 
 
 def can_reinitialize(project_root: Path, state: dict[str, object]) -> tuple[bool, str | None]:
@@ -156,7 +143,18 @@ def main() -> int:
         )
         return 1
 
-    initialized_state = build_initialized_state(project_root, request, request_sha)
+    should_recover_stale_same_request = (
+        recovery_reason is not None
+        and state["status"] == "validating"
+        and state["request_id"] == request["request_id"]
+        and state["request_sha256"] == request_sha
+        and state["remaining_waves"] > 0
+    )
+    initialized_state = (
+        build_recovered_state(project_root, request, request_sha, state)
+        if should_recover_stale_same_request
+        else build_initialized_state(project_root, request, request_sha)
+    )
     persist_state(project_root, initialized_state)
     prompt_path = materialize_wave_prompt(project_root, request, initialized_state)
     env = continue_command_env(project_root, request, initialized_state, prompt_path)
