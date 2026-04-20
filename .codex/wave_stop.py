@@ -11,15 +11,27 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Optional, Tuple
 
 ALLOWED_WAVE_EDIT_TARGETS = {
     "algorithms/pi_algo_improve-by-agent.py",
     "log.md",
 }
+ALLOWED_CONTROL_PLANE_DIRTY_TARGETS = {
+    ".codex/hooks.json",
+    ".codex/wave-control-init.py",
+    ".codex/wave_control_init.py",
+    ".codex/wave_stop.py",
+    "README.md",
+    "docs/init_prompt.md",
+    "docs/task.md",
+    "tools/verify_pi_bin.py",
+}
 REQUEST_FILE = ".codex/wave_request.json"
 STATE_FILE = ".codex/wave_state.json"
 LOCK_FILE = ".codex/wave.lock"
 LOCAL_JOURNAL_FILE = ".codex/local/wave_events.jsonl"
+PROMPT_DIR = ".codex/local/prompts"
 TASK_FILE = "docs/task.md"
 INIT_PROMPT_FILE = "docs/init_prompt.md"
 LOG_FILE = "log.md"
@@ -51,6 +63,17 @@ def emit(obj: dict) -> None:
     print(json.dumps(obj, ensure_ascii=False))
 
 
+def load_hook_payload() -> dict[str, object]:
+    raw = sys.stdin.read().strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def now_utc() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -74,7 +97,7 @@ def run_shell_command(project_root: Path, command: str) -> subprocess.CompletedP
     )
 
 
-def run_python_command(project_root: Path, args: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+def run_python_command(project_root: Path, args: list[str], *, input_text: Optional[str] = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, *args],
         cwd=project_root,
@@ -125,6 +148,14 @@ def git_changed_paths(project_root: Path) -> list[str]:
     return changed_paths
 
 
+def capture_worktree_snapshot(project_root: Path) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    for relative_path in git_changed_paths(project_root):
+        abs_path = project_root / relative_path
+        snapshot[relative_path] = sha256_file_hex(abs_path) if abs_path.exists() else "missing"
+    return snapshot
+
+
 def git_head(project_root: Path) -> str:
     completed = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -160,6 +191,14 @@ def sha256_hex(obj: dict[str, object]) -> str:
     return hashlib.sha256(normalize_json_bytes(obj)).hexdigest()
 
 
+def sha256_file_hex(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def inactive_request(data: dict[str, object]) -> bool:
     return (
         data.get("request_id") in (None, "")
@@ -169,7 +208,7 @@ def inactive_request(data: dict[str, object]) -> bool:
     )
 
 
-def load_request(project_root: Path) -> tuple[dict[str, object] | None, str | None]:
+def load_request(project_root: Path) -> Tuple[Optional[dict[str, object]], Optional[str]]:
     path = project_root / REQUEST_FILE
     if not path.exists():
         return (None, None)
@@ -181,19 +220,26 @@ def load_request(project_root: Path) -> tuple[dict[str, object] | None, str | No
         raise ValueError(f"{REQUEST_FILE} must contain a JSON object")
     if inactive_request(data):
         return (None, None)
-    required_keys = {"version", "request_id", "requested_waves", "goal", "target_file", "created_at"}
+    required_keys = {
+        "version",
+        "request_id",
+        "requested_waves",
+        "goal",
+        "continue_command",
+        "created_at",
+    }
     if set(data) != required_keys:
         raise ValueError(f"{REQUEST_FILE} keys must be exactly {sorted(required_keys)}")
-    if data["version"] != 1:
-        raise ValueError(f"{REQUEST_FILE} version must be 1")
+    if data["version"] != 2:
+        raise ValueError(f"{REQUEST_FILE} version must be 2")
     if not isinstance(data["request_id"], str) or not data["request_id"].strip():
         raise ValueError(f"{REQUEST_FILE} request_id must be a non-empty string")
     if not isinstance(data["requested_waves"], int) or data["requested_waves"] < 1:
         raise ValueError(f"{REQUEST_FILE} requested_waves must be an integer >= 1")
     if not isinstance(data["goal"], str) or not data["goal"].strip():
         raise ValueError(f"{REQUEST_FILE} goal must be a non-empty string")
-    if data["target_file"] != IMPROVE_SCRIPT:
-        raise ValueError(f"{REQUEST_FILE} target_file must be {IMPROVE_SCRIPT}")
+    if not isinstance(data["continue_command"], str) or not data["continue_command"].strip():
+        raise ValueError(f"{REQUEST_FILE} continue_command must be a non-empty string")
     if not isinstance(data["created_at"], str) or not data["created_at"].strip():
         raise ValueError(f"{REQUEST_FILE} created_at must be a non-empty string")
     return (data, sha256_hex(data))
@@ -201,14 +247,17 @@ def load_request(project_root: Path) -> tuple[dict[str, object] | None, str | No
 
 def default_state(project_root: Path) -> dict[str, object]:
     return {
-        "version": 1,
+        "version": 2,
         "request_id": None,
         "request_sha256": None,
         "status": "idle",
         "requested_waves": 0,
-        "completed_waves": 0,
+        "attempted_waves": 0,
+        "successful_waves": 0,
         "remaining_waves": 0,
         "current_wave": 0,
+        "baseline_dirty_paths": [],
+        "baseline_snapshot": {},
         "base_head": None,
         "base_branch": None,
         "worktree_path": str(project_root),
@@ -229,15 +278,21 @@ def load_state(project_root: Path) -> dict[str, object]:
         raise ValueError(f"invalid JSON in {STATE_FILE}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"{STATE_FILE} must contain a JSON object")
+    if data.get("version") == 2 and "baseline_snapshot" not in data:
+        data = dict(data)
+        data["baseline_snapshot"] = {}
     required_keys = {
         "version",
         "request_id",
         "request_sha256",
         "status",
         "requested_waves",
-        "completed_waves",
+        "attempted_waves",
+        "successful_waves",
         "remaining_waves",
         "current_wave",
+        "baseline_dirty_paths",
+        "baseline_snapshot",
         "base_head",
         "base_branch",
         "worktree_path",
@@ -248,19 +303,31 @@ def load_state(project_root: Path) -> dict[str, object]:
     }
     if set(data) != required_keys:
         raise ValueError(f"{STATE_FILE} keys must be exactly {sorted(required_keys)}")
-    if data["version"] != 1:
-        raise ValueError(f"{STATE_FILE} version must be 1")
+    if data["version"] != 2:
+        raise ValueError(f"{STATE_FILE} version must be 2")
     if data["status"] not in {"idle", "queued", "running", "validating", "completed", "failed", "aborted"}:
         raise ValueError(f"{STATE_FILE} status is invalid")
-    for key in ("requested_waves", "completed_waves", "remaining_waves", "current_wave"):
+    for key in ("requested_waves", "attempted_waves", "successful_waves", "remaining_waves", "current_wave"):
         if not isinstance(data[key], int) or data[key] < 0:
             raise ValueError(f"{STATE_FILE} {key} must be an integer >= 0")
-    if data["requested_waves"] != data["completed_waves"] + data["remaining_waves"]:
-        raise ValueError(f"{STATE_FILE} requested_waves must equal completed_waves + remaining_waves")
-    if data["status"] == "idle":
-        if data["request_id"] is not None or data["request_sha256"] is not None:
-            raise ValueError(f"{STATE_FILE} idle state must not carry an active request")
-    else:
+    if data["successful_waves"] > data["requested_waves"]:
+        raise ValueError(f"{STATE_FILE} successful_waves cannot exceed requested_waves")
+    if data["remaining_waves"] > data["requested_waves"]:
+        raise ValueError(f"{STATE_FILE} remaining_waves cannot exceed requested_waves")
+    if data["successful_waves"] + data["remaining_waves"] != data["requested_waves"]:
+        raise ValueError(f"{STATE_FILE} requested_waves must equal successful_waves + remaining_waves")
+    if data["attempted_waves"] < data["successful_waves"]:
+        raise ValueError(f"{STATE_FILE} attempted_waves cannot be less than successful_waves")
+    if not isinstance(data["baseline_dirty_paths"], list) or any(
+        not isinstance(path, str) for path in data["baseline_dirty_paths"]
+    ):
+        raise ValueError(f"{STATE_FILE} baseline_dirty_paths must be a list of strings")
+    if not isinstance(data["baseline_snapshot"], dict) or any(
+        not isinstance(path, str) or not isinstance(digest, str)
+        for path, digest in data["baseline_snapshot"].items()
+    ):
+        raise ValueError(f"{STATE_FILE} baseline_snapshot must be an object of path->digest strings")
+    if data["status"] != "idle":
         if not isinstance(data["request_id"], str) or not data["request_id"]:
             raise ValueError(f"{STATE_FILE} request_id must be a non-empty string outside idle state")
         if not isinstance(data["request_sha256"], str) or not data["request_sha256"]:
@@ -292,21 +359,18 @@ def compare_exact_bytes(actual_text: str, expected: bytes) -> tuple[bool, str]:
     return (False, "pi mismatch against reference binary")
 
 
-def require_campaign_start_clean(project_root: Path) -> tuple[bool, str]:
-    changed_paths = git_changed_paths(project_root)
-    disallowed = [path for path in changed_paths if path not in {REQUEST_FILE, STATE_FILE}]
-    if disallowed:
-        return (
-            False,
-            "campaign start requires a clean worktree outside control files; found "
-            + ", ".join(disallowed),
-        )
-    return (True, "")
+def compute_active_wave_paths(project_root: Path, baseline_snapshot: dict[str, str]) -> list[str]:
+    current_snapshot = capture_worktree_snapshot(project_root)
+    active_paths: list[str] = []
+    for path in sorted(set(current_snapshot) | set(baseline_snapshot)):
+        if baseline_snapshot.get(path) != current_snapshot.get(path):
+            active_paths.append(path)
+    return active_paths
 
 
-def require_only_allowed_wave_targets(project_root: Path) -> tuple[bool, str]:
-    changed_paths = git_changed_paths(project_root)
-    disallowed = [path for path in changed_paths if path not in ALLOWED_WAVE_EDIT_TARGETS]
+def require_only_allowed_wave_targets(project_root: Path, baseline_snapshot: dict[str, str]) -> tuple[bool, str]:
+    active_wave_paths = compute_active_wave_paths(project_root, baseline_snapshot)
+    disallowed = [path for path in active_wave_paths if path not in ALLOWED_WAVE_EDIT_TARGETS]
     if disallowed:
         return (
             False,
@@ -316,7 +380,7 @@ def require_only_allowed_wave_targets(project_root: Path) -> tuple[bool, str]:
             + ", ".join(sorted(ALLOWED_WAVE_EDIT_TARGETS))
             + " may change during a normal wave",
         )
-    if IMPROVE_SCRIPT not in changed_paths:
+    if IMPROVE_SCRIPT not in active_wave_paths:
         return (
             False,
             f"expected a change in {IMPROVE_SCRIPT} before consuming a wave",
@@ -332,13 +396,13 @@ def require_fixed_verify(project_root: Path) -> tuple[bool, str]:
     return (True, "")
 
 
-def parse_fixed_benchmark_output(output: str) -> tuple[dict[str, float], str | None]:
+def parse_fixed_benchmark_output(output: str) -> Tuple[dict[str, float], Optional[str]]:
     if "digits=65536" not in output:
         return ({}, f"benchmark output missing digits=65536: {FIXED_BENCHMARK_COMMAND}")
     if output.count("status=OK") < 2:
         return ({}, "benchmark output did not show both implementations passing verification")
     sections: dict[str, dict[str, str]] = {}
-    current: str | None = None
+    current: Optional[str] = None
     for raw_line in output.splitlines():
         line = raw_line.strip()
         if not line:
@@ -362,7 +426,7 @@ def parse_fixed_benchmark_output(output: str) -> tuple[dict[str, float], str | N
     return (parsed, None)
 
 
-def require_fixed_benchmark(project_root: Path) -> tuple[bool, dict[str, float] | None, str]:
+def require_fixed_benchmark(project_root: Path) -> Tuple[bool, Optional[dict[str, float]], str]:
     completed = run_shell_command(project_root, FIXED_BENCHMARK_COMMAND)
     if completed.returncode != 0:
         details = completed.stderr.strip() or completed.stdout.strip() or "benchmark failed"
@@ -383,7 +447,7 @@ def run_script_capture(project_root: Path, relative_path: str, digits: int) -> t
     return (completed.stdout.strip(), (ended_ns - started_ns) / 1_000_000)
 
 
-def run_trusted_benchmark(project_root: Path, reference_bytes: bytes) -> tuple[dict[str, float] | None, str | None]:
+def run_trusted_benchmark(project_root: Path, reference_bytes: bytes) -> Tuple[Optional[dict[str, float]], Optional[str]]:
     round_ratios: list[float] = []
     org_values: list[float] = []
     improve_values: list[float] = []
@@ -412,7 +476,7 @@ def run_trusted_benchmark(project_root: Path, reference_bytes: bytes) -> tuple[d
     )
 
 
-def parse_current_best_ratio(log_text: str) -> float | None:
+def parse_current_best_ratio(log_text: str) -> Optional[float]:
     match = CURRENT_BEST_PATTERN.search(log_text)
     if match is None:
         return None
@@ -429,7 +493,7 @@ def build_log_entry(
     *,
     wave_label: str,
     compatibility: dict[str, float],
-    trusted: dict[str, float] | None,
+    trusted: Optional[dict[str, float]],
     new_best: bool,
     notes: str,
 ) -> str:
@@ -468,7 +532,7 @@ def update_log(
     *,
     wave_label: str,
     compatibility: dict[str, float],
-    trusted: dict[str, float] | None,
+    trusted: Optional[dict[str, float]],
     notes: str,
 ) -> bool:
     log_path = project_root / LOG_FILE
@@ -540,7 +604,7 @@ def build_next_wave_prompt(project_root: Path, request: dict[str, object], state
     return (
         f"Continue request-driven wave campaign `{state['request_id']}`.\n"
         f"Wave {state['current_wave']} of {state['requested_waves']} is next.\n"
-        f"Remaining waves after this one: {state['remaining_waves']}.\n"
+        f"Remaining waves after this one: {max(state['remaining_waves'] - 1, 0)}.\n"
         "Execute exactly one optimization wave in this turn.\n"
         "Before starting, read the request, task, init prompt, and log again.\n\n"
         f"[{REQUEST_FILE}]\n{request_text}\n\n"
@@ -558,13 +622,78 @@ def build_next_wave_prompt(project_root: Path, request: dict[str, object], state
     )
 
 
+def materialize_wave_prompt(project_root: Path, request: dict[str, object], state: dict[str, object]) -> Path:
+    prompt_text = build_next_wave_prompt(project_root, request, state)
+    prompt_path = project_root / PROMPT_DIR / str(request["request_id"]) / f"wave-{state['current_wave']}.md"
+    atomic_write_text(prompt_path, prompt_text)
+    return prompt_path
+
+
+def continue_command_env(
+    project_root: Path,
+    request: dict[str, object],
+    state: dict[str, object],
+    prompt_path: Path,
+) -> dict[str, str]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "PROJECT_ROOT": str(project_root),
+            "REQUEST_ID": str(request["request_id"]),
+            "REQUEST_FILE": str(project_root / REQUEST_FILE),
+            "STATE_FILE": str(project_root / STATE_FILE),
+            "TASK_FILE": str(prompt_path),
+            "WAVE_NUMBER": str(state["current_wave"]),
+            "REQUESTED_WAVES": str(state["requested_waves"]),
+            "REMAINING_WAVES": str(state["remaining_waves"]),
+        }
+    )
+    return env
+
+
+def launch_continue_command(project_root: Path, request: dict[str, object], state: dict[str, object]) -> int:
+    prompt_path = materialize_wave_prompt(project_root, request, state)
+    env = continue_command_env(project_root, request, state, prompt_path)
+    remaining_after_launch = max(int(state["remaining_waves"]) - 1, 0)
+    try:
+        subprocess.Popen(
+            ["sh", "-lc", str(request["continue_command"])],
+            cwd=project_root,
+            env=env,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        emit(
+            {
+                "continue": False,
+                "stopReason": "Continue command failed to launch",
+                "systemMessage": (
+                    f"Failed to launch continue_command for request {request['request_id']}: {exc}"
+                ),
+            }
+        )
+        return 0
+    emit(
+        {
+            "continue": False,
+            "stopReason": "Launched next wave",
+            "systemMessage": (
+                f"Launched request {request['request_id']} wave {state['current_wave']}/"
+                f"{state['requested_waves']} using {prompt_path}; "
+                f"remaining_waves_after_this={remaining_after_launch}."
+            ),
+        }
+    )
+    return 0
+
+
 def make_stop_state(
     project_root: Path,
     state: dict[str, object],
     *,
     status: str,
     reason: str,
-    request_id: str | None = None,
+    request_id: Optional[str] = None,
 ) -> dict[str, object]:
     updated = dict(state)
     updated["status"] = status
@@ -576,8 +705,28 @@ def make_stop_state(
     return updated
 
 
-def fail_run(project_root: Path, state: dict[str, object], reason: str, *, request_id: str | None = None) -> int:
-    failed_state = make_stop_state(project_root, state, status="failed", reason=reason, request_id=request_id)
+def fail_run(project_root: Path, state: dict[str, object], reason: str, *, request_id: Optional[str] = None) -> int:
+    failed_state = dict(state)
+    if failed_state["status"] in ACTIVE_STATUSES:
+        failed_state["attempted_waves"] += 1
+        failed_state["last_result"] = {
+            "kind": "wave_failed",
+            "wave": (
+                f"{failed_state['request_id']}/wave-{failed_state['current_wave']}"
+                if failed_state["request_id"] is not None and failed_state["current_wave"] > 0
+                else None
+            ),
+            "summary": reason,
+            "details": {"category": "controller", "reason": reason},
+            "benchmark_result": None,
+        }
+    failed_state = make_stop_state(
+        project_root,
+        failed_state,
+        status="failed",
+        reason=reason,
+        request_id=request_id,
+    )
     append_journal(
         project_root,
         {
@@ -607,14 +756,21 @@ def bootstrap_run(project_root: Path, request: dict[str, object], request_sha: s
         return 0
     started_at = now_utc()
     state = {
-        "version": 1,
+        "version": 2,
         "request_id": request["request_id"],
         "request_sha256": request_sha,
-        "status": "running",
+        "status": "queued",
         "requested_waves": request["requested_waves"],
-        "completed_waves": 0,
+        "attempted_waves": 0,
+        "successful_waves": 0,
         "remaining_waves": request["requested_waves"],
         "current_wave": 1,
+        "baseline_dirty_paths": sorted(
+            path
+            for path in git_changed_paths(project_root)
+            if path in ALLOWED_CONTROL_PLANE_DIRTY_TARGETS
+        ),
+        "baseline_snapshot": capture_worktree_snapshot(project_root),
         "base_head": git_head(project_root),
         "base_branch": git_branch(project_root),
         "worktree_path": str(project_root),
@@ -640,18 +796,22 @@ def bootstrap_run(project_root: Path, request: dict[str, object], request_sha: s
             "stop_reason": None,
         },
     )
-    next_prompt = build_next_wave_prompt(project_root, request, state)
-    emit(
-        {
-            "decision": "block",
-            "reason": next_prompt,
-            "systemMessage": f"Auto-continuing request {request['request_id']} wave 1/{request['requested_waves']}.",
-        }
-    )
-    return 0
+    return launch_continue_command(project_root, request, state)
 
 
-def validate_active_bindings(project_root: Path, request: dict[str, object], request_sha: str, state: dict[str, object]) -> str | None:
+def resume_failed_campaign(project_root: Path, request: dict[str, object], request_sha: str, state: dict[str, object]) -> int:
+    resumed = dict(state)
+    resumed["version"] = 2
+    resumed["request_sha256"] = request_sha
+    resumed["status"] = "queued"
+    resumed["current_wave"] = resumed["successful_waves"] + 1 if resumed["remaining_waves"] > 0 else 0
+    resumed["last_stop_reason"] = None
+    resumed["updated_at"] = now_utc()
+    persist_state(project_root, resumed)
+    return launch_continue_command(project_root, request, resumed)
+
+
+def validate_active_bindings(project_root: Path, request: dict[str, object], request_sha: str, state: dict[str, object]) -> Optional[str]:
     if request["request_id"] != state["request_id"]:
         return f"active request_id mismatch: state={state['request_id']} request={request['request_id']}"
     if request_sha != state["request_sha256"]:
@@ -668,11 +828,12 @@ def validate_active_bindings(project_root: Path, request: dict[str, object], req
 
 
 def main() -> int:
-    payload = json.load(sys.stdin)
-    cwd = Path(payload["cwd"]).resolve()
+    payload = load_hook_payload()
+    cwd = Path(str(payload.get("cwd", os.getcwd()))).resolve()
     project_root = resolve_project_root(cwd)
     lock_path = project_root / LOCK_FILE
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    pending_continue: Optional[Tuple[dict[str, object], dict[str, object]]] = None
 
     with lock_path.open("w", encoding="utf-8") as lockf:
         fcntl.flock(lockf, fcntl.LOCK_EX)
@@ -697,7 +858,7 @@ def main() -> int:
             return 0
 
         if state["status"] in TERMINAL_STATUSES:
-            if state["request_id"] == request["request_id"] and state["status"] != "idle":
+            if state["request_id"] == request["request_id"] and state["status"] == "completed":
                 emit(
                     {
                         "continue": False,
@@ -709,7 +870,29 @@ def main() -> int:
                     }
                 )
                 return 0
-            return bootstrap_run(project_root, request, request_sha)
+            if state["request_id"] == request["request_id"] and state["status"] in {"failed", "aborted"}:
+                emit(
+                    {
+                        "continue": False,
+                        "stopReason": "Campaign requires initialization",
+                        "systemMessage": (
+                            f"Request {request['request_id']} is {state['status']}. "
+                            f"Run `python3 .codex/wave-control-init.py` to reinitialize wave 1."
+                        ),
+                    }
+                )
+                return 0
+            emit(
+                {
+                    "continue": False,
+                    "stopReason": "Campaign requires initialization",
+                    "systemMessage": (
+                        f"Request {request['request_id']} is not initialized in {STATE_FILE}. "
+                        f"Run `python3 .codex/wave-control-init.py` before starting wave 1."
+                    ),
+                }
+            )
+            return 0
 
         binding_error = validate_active_bindings(project_root, request, request_sha, state)
         if binding_error is not None:
@@ -720,7 +903,10 @@ def main() -> int:
         validating_state["updated_at"] = now_utc()
         persist_state(project_root, validating_state)
 
-        allowed_ok, allowed_reason = require_only_allowed_wave_targets(project_root)
+        allowed_ok, allowed_reason = require_only_allowed_wave_targets(
+            project_root,
+            validating_state["baseline_snapshot"],
+        )
         if not allowed_ok:
             return fail_run(project_root, validating_state, allowed_reason)
 
@@ -754,7 +940,8 @@ def main() -> int:
         )
 
         next_state = dict(validating_state)
-        next_state["completed_waves"] += 1
+        next_state["attempted_waves"] += 1
+        next_state["successful_waves"] += 1
         next_state["remaining_waves"] -= 1
         next_state["last_result"] = {
             "wave": wave_label,
@@ -764,9 +951,11 @@ def main() -> int:
             "new_best": new_best,
         }
         next_state["last_stop_reason"] = None
-        next_state["current_wave"] = next_state["completed_waves"] + 1 if next_state["remaining_waves"] > 0 else next_state["current_wave"]
+        next_state["current_wave"] = (
+            next_state["successful_waves"] + 1 if next_state["remaining_waves"] > 0 else next_state["current_wave"]
+        )
         next_state["updated_at"] = now_utc()
-        next_state["status"] = "completed" if next_state["remaining_waves"] == 0 else "running"
+        next_state["status"] = "completed" if next_state["remaining_waves"] == 0 else "queued"
         persist_state(project_root, next_state)
 
         append_journal(
@@ -800,18 +989,12 @@ def main() -> int:
             )
             return 0
 
-        next_prompt = build_next_wave_prompt(project_root, request, next_state)
-        emit(
-            {
-                "decision": "block",
-                "reason": next_prompt,
-                "systemMessage": (
-                    f"Auto-continuing request {state['request_id']} "
-                    f"wave {next_state['current_wave']}/{next_state['requested_waves']}."
-                ),
-            }
-        )
-        return 0
+        pending_continue = (request, next_state)
+
+    if pending_continue is not None:
+        continue_request, continue_state = pending_continue
+        return launch_continue_command(project_root, continue_request, continue_state)
+    return 0
 
 
 if __name__ == "__main__":

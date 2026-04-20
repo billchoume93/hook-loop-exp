@@ -61,16 +61,36 @@ Start a new multi-wave campaign by editing `.codex/wave_request.json` with:
 - a new `request_id`
 - `requested_waves`
 - a non-empty `goal`
-- `target_file` set to `algorithms/pi_algo_improve-by-agent.py`
+- `continue_command`
 - `created_at`
+
+Then initialize the control plane explicitly:
+
+```bash
+python3 .codex/wave-control-init.py
+```
+
+The initializer syncs `.codex/wave_state.json` to wave 1 in `queued` status,
+captures the current worktree as the baseline snapshot for later wave-diff
+checks, and materializes the exact prompt file that should be passed to the
+next Codex CLI run.
+
+If you want the initializer to launch the first Codex CLI process itself, use:
+
+```bash
+python3 .codex/wave-control-init.py --run
+```
 
 Campaign rules:
 
-- The worktree must be clean outside the tracked control files under `.codex/`
-  before a new campaign starts.
-- The Stop hook is the only auto-continue entrypoint.
+- `.codex/wave-control-init.py` is the supported bootstrap entrypoint for
+  wave 1.
+- After initialization, the Stop hook is the only auto-continue entrypoint for
+  later waves.
 - `.codex/wave_request.json` is immutable during an active campaign.
 - `.codex/wave_state.json` is controller-owned and records the active or most
   recent campaign snapshot.
+- The controller compares each wave against the initializer's baseline
+  snapshot, so unrelated pre-existing dirty files do not block campaign start.
 - `log.md` records validated performance history.
 - `.codex/local/wave_events.jsonl` records local controller audit events.

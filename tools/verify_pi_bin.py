@@ -3,6 +3,7 @@
 import argparse
 import sys
 from pathlib import Path
+from typing import Optional
 
 REFERENCE_PATH = Path(__file__).resolve().parent.parent / "reference" / "pi_65536.bin"
 MAX_VERIFIED_DIGITS = 65536
@@ -64,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def read_input(input_path: Path | None) -> str:
+def read_input(input_path: Optional[Path]) -> str:
     if input_path is None:
         return sys.stdin.read().strip()
     return input_path.read_text(encoding="ascii").strip()

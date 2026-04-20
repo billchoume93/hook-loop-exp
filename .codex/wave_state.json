@@ -1,17 +1,49 @@
 {
-  "version": 1,
-  "request_id": null,
-  "request_sha256": null,
-  "status": "idle",
-  "requested_waves": 0,
-  "completed_waves": 0,
-  "remaining_waves": 0,
-  "current_wave": 0,
-  "base_head": null,
-  "base_branch": null,
+  "version": 2,
+  "request_id": "2026-04-20-0032",
+  "request_sha256": "063b45389494b8c18e134900bd0a21405a96a592ca2ecaa6fac84e196124e9c0",
+  "status": "failed",
+  "requested_waves": 3,
+  "attempted_waves": 1,
+  "successful_waves": 0,
+  "remaining_waves": 3,
+  "current_wave": 1,
+  "baseline_dirty_paths": [
+    ".codex/wave-control-init.py",
+    ".codex/wave_control_init.py",
+    ".codex/wave_stop.py",
+    "README.md",
+    "docs/init_prompt.md",
+    "docs/task.md",
+    "log.md",
+    "note.md",
+    "tools/verify_pi_bin.py"
+  ],
+  "baseline_snapshot": {
+    ".codex/wave_stop.py": "a1135a970b5ae7ce43840c09446f50f8d7c56b2fe16db6088e6feb426f15d6d9",
+    "README.md": "c775bd9920985943e1edb22fc29fbae620dda109fd7c26d61c569e903cf657bf",
+    "docs/init_prompt.md": "3cc1ba6542f1eedf01fe6d2d5f962a49b9b7aabbae4d3e102d0ad91ed1aa261c",
+    "docs/task.md": "524b0ffa2f6965fba005e346a53d0d5d9c6666f2b9c1b3437f6411ce8914e0fd",
+    "log.md": "2bcd5f4f19dc85d9b2cfc90efe7a28db4b1e1b21c35b9c270979d6e939da30db",
+    "tools/verify_pi_bin.py": "30cbd727bb9d2bcbd527739d225f2f021ad9351c708f908f177b012c4d8b06bd",
+    ".codex/wave-control-init.py": "c278b60d6a7eb0f1f01e44034c05340ae151f2069d7762e6e3327a1f3c3f24ff",
+    ".codex/wave_control_init.py": "9b0c978147f58b7bb8b7702e099a86e2a7ecb0f3c46858ceb9049a710a512ef4",
+    "note.md": "6281fdd54c6513bd3904175716f79c33a639d251573df76b4ddf83b6c7416e5c"
+  },
+  "base_head": "f5b07a2b094e6b51ae6beae45ac2c60ff919032c",
+  "base_branch": "main",
   "worktree_path": "/Users/keira/work/hook_loop_exp",
-  "last_result": null,
-  "last_stop_reason": null,
-  "created_at": null,
-  "updated_at": null
+  "last_result": {
+    "kind": "wave_failed",
+    "wave": "2026-04-20-0032/wave-1",
+    "summary": "expected a change in algorithms/pi_algo_improve-by-agent.py before consuming a wave",
+    "details": {
+      "category": "controller",
+      "reason": "expected a change in algorithms/pi_algo_improve-by-agent.py before consuming a wave"
+    },
+    "benchmark_result": null
+  },
+  "last_stop_reason": "expected a change in algorithms/pi_algo_improve-by-agent.py before consuming a wave",
+  "created_at": "2026-04-19T16:39:05Z",
+  "updated_at": "2026-04-19T16:39:20Z"
 }

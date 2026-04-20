@@ -22,14 +22,18 @@
 ## Campaign 控制面
 
 - 多-wave campaign 由 `.codex/wave_request.json` 啟動。
+- 建立或修改新的 request 之後，必須先執行 `python3 .codex/wave-control-init.py`
+  來校正 `.codex/wave_state.json`，再開始 wave 1。
 - 啟動新 campaign 時，必須在 `.codex/wave_request.json` 填入新的 `request_id`、
-  `requested_waves`、`goal`、`target_file`、`created_at`。
-- `target_file` 必須固定為 `algorithms/pi_algo_improve-by-agent.py`。
-- 啟動新 campaign 前，worktree 在 `.codex/` 控制檔之外必須是乾淨的。
+  `requested_waves`、`goal`、`continue_command`、`created_at`。
+- `continue_command` 必須是 controller 用來繼續下一輪的固定命令。
 - `.codex/wave_request.json` 在 active campaign 期間不可修改。
 - `.codex/wave_state.json` 是 controller-owned runtime state，不可在 active campaign
   期間手動修改。
 - `.codex/local/wave_events.jsonl` 是本地 append-only audit journal，不進 git。
+- wave 1 必須由 initializer bootstrap；Stop hook 只負責驗證當前 wave 與自動續跑後續 wave。
+- initializer 會把啟動當下的 worktree 記為 baseline；後續 wave 驗證只看相對於 baseline
+  新增或變更的檔案，不要求 campaign start 時先把非控制面工作樹清空。
 
 ## 連續演化規則
 
