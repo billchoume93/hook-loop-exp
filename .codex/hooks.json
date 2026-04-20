@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "sh -lc 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/.codex/wave_stop.py\" ]; then exec python3 \"$d/.codex/wave_stop.py\"; fi; d=$(dirname \"$d\"); done; printf '{\"continue\":false,\"stopReason\":\"wave_stop.py not found\",\"systemMessage\":\".codex/wave_stop.py not found, stop loop.\"}\\n''",
-            "timeout": 180,
+            "timeout": 1024,
             "statusMessage": "wave loop controller"
           }
         ]

@@ -45,6 +45,8 @@ FIXED_DIGITS = 65536
 ACTIVE_STATUSES = {"queued", "running", "validating"}
 TERMINAL_STATUSES = {"idle", "completed", "failed", "aborted"}
 TRUSTED_BENCHMARK_ROUNDS = (("org", "improve"), ("improve", "org"), ("org", "improve"))
+STOP_HOOK_TIMEOUT_SECONDS = 180
+STOP_HOOK_SAFETY_MARGIN_SECONDS = 15
 IGNORED_PATH_PREFIXES = (
     "__pycache__/",
     "algorithms/__pycache__/",
@@ -476,6 +478,33 @@ def run_trusted_benchmark(project_root: Path, reference_bytes: bytes) -> Tuple[O
     )
 
 
+def should_run_trusted_benchmark(
+    compatibility_result: dict[str, float],
+    *,
+    started_at: float,
+) -> tuple[bool, Optional[str]]:
+    elapsed = time.perf_counter() - started_at
+    remaining_budget = STOP_HOOK_TIMEOUT_SECONDS - STOP_HOOK_SAFETY_MARGIN_SECONDS - elapsed
+    estimated_trusted_seconds = (
+        len(TRUSTED_BENCHMARK_ROUNDS)
+        * (compatibility_result["org_execution_ms"] + compatibility_result["improve_execution_ms"])
+        / 1000.0
+    )
+    if remaining_budget <= 0:
+        return (
+            False,
+            f"trusted benchmark skipped: no stop-hook budget remains (elapsed={elapsed:.3f}s)",
+        )
+    if estimated_trusted_seconds > remaining_budget:
+        return (
+            False,
+            "trusted benchmark skipped: estimated "
+            f"{estimated_trusted_seconds:.3f}s exceeds remaining stop-hook budget "
+            f"{remaining_budget:.3f}s",
+        )
+    return (True, None)
+
+
 def parse_current_best_ratio(log_text: str) -> Optional[float]:
     match = CURRENT_BEST_PATTERN.search(log_text)
     if match is None:
@@ -510,9 +539,9 @@ def build_log_entry(
     if trusted is None:
         lines.extend(
             [
-                "- Decision `improve` execution_ms: `n/a`",
-                "- Decision `org` execution_ms: `n/a`",
-                "- Decision execution ratio vs `org`: `n/a`",
+                "- Decision `improve` execution_ms: `pending controller`",
+                "- Decision `org` execution_ms: `pending controller`",
+                "- Decision execution ratio vs `org`: `pending controller`",
             ]
         )
     else:
@@ -828,6 +857,7 @@ def validate_active_bindings(project_root: Path, request: dict[str, object], req
 
 
 def main() -> int:
+    hook_started_at = time.perf_counter()
     payload = load_hook_payload()
     cwd = Path(str(payload.get("cwd", os.getcwd()))).resolve()
     project_root = resolve_project_root(cwd)
@@ -924,7 +954,16 @@ def main() -> int:
         if not benchmark_ok or compatibility_result is None:
             return fail_run(project_root, validating_state, benchmark_reason)
 
-        trusted_result, trusted_error = run_trusted_benchmark(project_root, reference_bytes)
+        trusted_result = None
+        trusted_error = None
+        run_trusted, skip_reason = should_run_trusted_benchmark(
+            compatibility_result,
+            started_at=hook_started_at,
+        )
+        if run_trusted:
+            trusted_result, trusted_error = run_trusted_benchmark(project_root, reference_bytes)
+        else:
+            trusted_error = skip_reason
         notes = (
             f"Controller-validated wave for request {state['request_id']}."
             if trusted_error is None

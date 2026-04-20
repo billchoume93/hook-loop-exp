@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import datetime as dt
+import json
 from pathlib import Path
 
 from wave_stop import (
@@ -18,6 +20,9 @@ from wave_stop import (
     persist_state,
     resolve_project_root,
 )
+
+HOOKS_FILE = ".codex/hooks.json"
+DEFAULT_STALE_VALIDATING_SECONDS = 180
 
 
 def build_initialized_state(project_root: Path, request: dict[str, object], request_sha: str) -> dict[str, object]:
@@ -71,6 +76,63 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def parse_utc_timestamp(value: object) -> dt.datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def load_stop_hook_timeout_seconds(project_root: Path) -> int:
+    hooks_path = project_root / HOOKS_FILE
+    if not hooks_path.exists():
+        return DEFAULT_STALE_VALIDATING_SECONDS
+    try:
+        data = json.loads(hooks_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return DEFAULT_STALE_VALIDATING_SECONDS
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return DEFAULT_STALE_VALIDATING_SECONDS
+    stop_entries = hooks.get("Stop")
+    if not isinstance(stop_entries, list):
+        return DEFAULT_STALE_VALIDATING_SECONDS
+    for entry in stop_entries:
+        if not isinstance(entry, dict):
+            continue
+        nested_hooks = entry.get("hooks")
+        if not isinstance(nested_hooks, list):
+            continue
+        for hook in nested_hooks:
+            if not isinstance(hook, dict):
+                continue
+            timeout = hook.get("timeout")
+            if isinstance(timeout, int) and timeout > 0:
+                return timeout
+    return DEFAULT_STALE_VALIDATING_SECONDS
+
+
+def can_reinitialize(project_root: Path, state: dict[str, object]) -> tuple[bool, str | None]:
+    if state["status"] in {"idle", "completed", "failed", "aborted"}:
+        return (True, None)
+    if state["status"] != "validating":
+        return (False, None)
+    updated_at = parse_utc_timestamp(state.get("updated_at"))
+    if updated_at is None:
+        return (True, "recovering validating state with missing updated_at")
+    stale_validating_seconds = load_stop_hook_timeout_seconds(project_root)
+    age = (dt.datetime.now(dt.timezone.utc) - updated_at).total_seconds()
+    if age >= stale_validating_seconds:
+        return (
+            True,
+            "recovering stale validating state after "
+            f"{age:.0f}s without completion (threshold={stale_validating_seconds}s)",
+        )
+    return (False, None)
+
+
 def main() -> int:
     args = parse_args()
     project_root = resolve_project_root(Path.cwd())
@@ -86,7 +148,8 @@ def main() -> int:
         print(f"set a new request in {REQUEST_FILE} before running initialization")
         return 1
 
-    if state["status"] not in {"idle", "completed", "failed", "aborted"}:
+    can_init, recovery_reason = can_reinitialize(project_root, state)
+    if not can_init:
         print(
             f"cannot initialize while {STATE_FILE} is active "
             f"(request_id={state['request_id']}, status={state['status']})"
@@ -102,6 +165,8 @@ def main() -> int:
     print(f"initialized request {request['request_id']} for wave 1/{request['requested_waves']}")
     print(f"prompt_file={prompt_path}")
     print(f"next_command={command_preview}")
+    if recovery_reason is not None:
+        print(recovery_reason)
 
     if args.run:
         return launch_continue_command(project_root, request, initialized_state)
