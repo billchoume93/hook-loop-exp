@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "allowed_wave_edit_targets": [
+    "algorithms/pi_algo_improve-by-agent.py",
+    "log.md"
+  ],
+  "required_wave_edit_targets": [
+    "algorithms/pi_algo_improve-by-agent.py"
+  ],
+  "ignored_paths": [
+    ".codex/wave.lock",
+    ".codex/wave_request.json",
+    ".codex/wave_state.json"
+  ],
+  "ignored_path_prefixes": [
+    "__pycache__/",
+    "algorithms/__pycache__/",
+    "tools/__pycache__/",
+    ".codex/__pycache__/",
+    ".codex/local/"
+  ],
+  "prompt_context_files": [
+    "docs/init_prompt.md",
+    "docs/task.md",
+    "log.md"
+  ],
+  "log_file": "log.md",
+  "verification": {
+    "exact_command": "python3 algorithms/pi_algo_improve-by-agent.py 65536 | python3 tools/verify_pi_bin.py --exact"
+  },
+  "benchmark": {
+    "compatibility_command": "python3 run_verify_timed.py 65536 --repeats 1",
+    "decision_command_label": "controller median of order-balanced direct runs (org/improve, improve/org, org/improve)",
+    "heavy_command_policy": "first_wave_only",
+    "subsequent_wave_guidance": "After wave 1, do not run the compatibility command by default because it includes the slow org baseline. Use exact verification plus targeted improve-only timing, and reuse log.md for org/current-best context unless a full benchmark is explicitly needed."
+  },
+  "diagnosis_only": {
+    "enabled": true
+  }
+}
