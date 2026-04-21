@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "request_id": "",
-  "requested_waves": 0,
-  "goal": "",
-  "continue_command": "",
-  "created_at": ""
+  "request_id": "test_04-21-1641",
+  "requested_waves": 4,
+  "goal": "Improve single-core 65536-digit pi trusted benchmark performance over the current best.",
+  "continue_command": "codex exec --dangerously-bypass-approvals-and-sandbox --cd \"${PROJECT_ROOT}\" - < \"${TASK_FILE}\"",
+  "created_at": "2026-04-20T00:32:00Z"
 }
